@@ -27,7 +27,7 @@ export default function PrototypeAdmin() {
 
     const { data, error: qError } = await client
       .from("profiles")
-      .select("id, email, status, role, created_at, updated_at")
+      .select("id, email, display_name, organization, status, role, created_at, updated_at")
       .order("created_at", { ascending: false });
 
     if (qError) {
@@ -128,6 +128,11 @@ export default function PrototypeAdmin() {
                   >
                     <div>
                       <p className="font-medium text-[var(--color-text-primary)]">{p.email}</p>
+                      {p.display_name || p.organization ? (
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          {[p.display_name, p.organization].filter(Boolean).join(" · ")}
+                        </p>
+                      ) : null}
                       <p className="text-xs text-[var(--color-text-secondary)]">
                         Requested {new Date(p.created_at).toLocaleString()}
                       </p>

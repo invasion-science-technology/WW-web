@@ -12,6 +12,8 @@ on:
       - "app/prototype/**"
       - "components/prototype/**"
       - "lib/prototype/**"
+      - "components/prototype/**"
+      - "lib/prototype/**"
       - "lib/supabase/**"
       - "supabase/**"
       - "scripts/ec2/**"

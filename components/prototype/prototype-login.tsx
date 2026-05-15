@@ -2,13 +2,17 @@
 
 import { useCallback, useState } from "react";
 
+import PrototypeEmailVerify from "@/components/prototype/prototype-email-verify";
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
 
-type Tab = "signin" | "signup";
+type Tab = "signin" | "signup" | "forgot";
 
 export default function PrototypeLogin() {
-  const { mode, expectedEmail, signIn, signUp } = usePrototypeAuth();
+  const { mode, expectedEmail, signIn, signUp, requestPasswordReset } = usePrototypeAuth();
   const [tab, setTab] = useState<Tab>("signin");
+  const [awaitingVerificationEmail, setAwaitingVerificationEmail] = useState<string | null>(
+    null,
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -24,6 +28,18 @@ export default function PrototypeLogin() {
       setBusy(true);
 
       try {
+        if (tab === "forgot") {
+          const result = await requestPasswordReset(email);
+          if (!result.ok) {
+            setError(result.error ?? "Could not send reset email.");
+            return;
+          }
+          setInfo(
+            "If an account exists for that email, we sent a reset link. Check your inbox (and spam).",
+          );
+          return;
+        }
+
         if (tab === "signup") {
           if (password !== confirm) {
             setError("Passwords do not match.");
@@ -34,8 +50,12 @@ export default function PrototypeLogin() {
             setError(result.error ?? "Sign-up failed.");
             return;
           }
+          if (result.needsEmailConfirmation) {
+            setAwaitingVerificationEmail(email.trim());
+            return;
+          }
           setInfo(
-            "Account created. You can sign in once an admin approves your access (check your email if confirmation is enabled).",
+            "Account created. You can sign in once an admin approves your access.",
           );
           setTab("signin");
           return;
@@ -43,14 +63,22 @@ export default function PrototypeLogin() {
 
         const result = await signIn(email, password);
         if (!result.ok) {
+          if (result.needsEmailConfirmation) {
+            setAwaitingVerificationEmail(email.trim());
+            return;
+          }
           setError(result.error ?? "Invalid email or password.");
         }
       } finally {
         setBusy(false);
       }
     },
-    [tab, email, password, confirm, signIn, signUp],
+    [tab, email, password, confirm, signIn, signUp, requestPasswordReset],
   );
+
+  if (awaitingVerificationEmail) {
+    return <PrototypeEmailVerify email={awaitingVerificationEmail} />;
+  }
 
   return (
     <div className="min-h-[70vh] flex items-center justify-center px-6 py-10">
@@ -59,7 +87,11 @@ export default function PrototypeLogin() {
           Field lab · {mode === "supabase" ? "Account" : "Demo"}
         </p>
         <h1 className="mt-2 text-xl font-semibold text-[var(--color-text-primary)]">
-          {tab === "signin" ? "Sign in" : "Create account"}
+          {tab === "signin"
+            ? "Sign in"
+            : tab === "signup"
+              ? "Create account"
+              : "Reset password"}
         </h1>
         <p className="mt-2 text-sm text-[var(--color-text-secondary)] leading-relaxed">
           {mode === "supabase" ? (
@@ -123,18 +155,37 @@ export default function PrototypeLogin() {
               className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-dim)]"
             />
           </label>
-          <label className="block text-xs font-medium uppercase tracking-wide text-[var(--color-text-secondary)]">
-            Password
-            <input
-              type="password"
-              required
-              minLength={mode === "supabase" ? 8 : 1}
-              autoComplete={tab === "signup" ? "new-password" : "current-password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-dim)]"
-            />
-          </label>
+          {tab !== "forgot" ? (
+            <label className="block text-xs font-medium uppercase tracking-wide text-[var(--color-text-secondary)]">
+              Password
+              <input
+                type="password"
+                required
+                minLength={mode === "supabase" ? 8 : 1}
+                autoComplete={tab === "signup" ? "new-password" : "current-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-dim)]"
+              />
+            </label>
+          ) : (
+            <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed">
+              We will email a link to set a new password. The link opens the Field lab reset page.
+            </p>
+          )}
+          {tab === "signin" && mode === "supabase" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setTab("forgot");
+                setError(null);
+                setInfo(null);
+              }}
+              className="text-sm text-[var(--color-accent)] hover:underline -mt-2"
+            >
+              Forgot password?
+            </button>
+          ) : null}
           {tab === "signup" && mode === "supabase" ? (
             <label className="block text-xs font-medium uppercase tracking-wide text-[var(--color-text-secondary)]">
               Confirm password
@@ -164,9 +215,29 @@ export default function PrototypeLogin() {
             disabled={busy}
             className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-[#052e16] hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            {busy ? "Please wait…" : tab === "signin" ? "Sign in" : "Create account"}
+            {busy
+              ? "Please wait…"
+              : tab === "signin"
+                ? "Sign in"
+                : tab === "signup"
+                  ? "Create account"
+                  : "Send reset link"}
           </button>
         </form>
+
+        {tab === "forgot" ? (
+          <button
+            type="button"
+            onClick={() => {
+              setTab("signin");
+              setError(null);
+              setInfo(null);
+            }}
+            className="mt-4 w-full text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          >
+            Back to sign in
+          </button>
+        ) : null}
 
         {mode === "demo" ? (
           <p className="mt-5 text-[11px] text-[var(--color-text-secondary)] leading-relaxed border-t border-[var(--color-border)] pt-4">

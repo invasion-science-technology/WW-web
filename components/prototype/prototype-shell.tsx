@@ -28,6 +28,12 @@ export default function PrototypeShell({ children }: { children: ReactNode }) {
           <nav className="flex items-center gap-2 shrink-0">
             {showNav && session ? (
               <>
+                <Link
+                  href="/prototype/profile"
+                  className="text-xs sm:text-sm px-3 py-2 rounded-full border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-dim)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  Profile
+                </Link>
                 {isAdmin ? (
                   <Link
                     href="/prototype/admin"
@@ -36,7 +42,7 @@ export default function PrototypeShell({ children }: { children: ReactNode }) {
                     Admin
                   </Link>
                 ) : null}
-                <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[140px] sm:max-w-[200px]">
+                <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[100px] sm:max-w-[160px] hidden sm:inline">
                   {session.email}
                 </span>
                 <button

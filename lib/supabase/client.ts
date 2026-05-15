@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-import type { Profile, ProfileStatus } from "@/lib/supabase/types";
+import type { Profile, ProfileStatus, ProfileUpdate } from "@/lib/supabase/types";
 
 export type { Profile, ProfileStatus };
 
@@ -40,7 +40,7 @@ export async function fetchProfile(
 ): Promise<Profile | null> {
   const { data, error } = await client
     .from("profiles")
-    .select("id, email, status, role, created_at, updated_at")
+    .select("id, email, display_name, organization, status, role, created_at, updated_at")
     .eq("id", userId)
     .maybeSingle();
 
@@ -50,4 +50,32 @@ export async function fetchProfile(
   }
 
   return data as Profile | null;
+}
+
+export async function updateProfileFields(
+  client: SupabaseClient,
+  userId: string,
+  fields: ProfileUpdate,
+): Promise<{ profile: Profile | null; error?: string }> {
+  const payload: ProfileUpdate = {};
+  if (fields.display_name !== undefined) {
+    payload.display_name = fields.display_name?.trim() || null;
+  }
+  if (fields.organization !== undefined) {
+    payload.organization = fields.organization?.trim() || null;
+  }
+
+  const { data, error } = await client
+    .from("profiles")
+    .update(payload)
+    .eq("id", userId)
+    .select("id, email, display_name, organization, status, role, created_at, updated_at")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[profiles update]", error.message);
+    return { profile: null, error: error.message };
+  }
+
+  return { profile: data as Profile | null };
 }

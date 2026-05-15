@@ -40,6 +40,29 @@ Remove or leave unset `NEXT_PUBLIC_PROTO_EMAIL` / `NEXT_PUBLIC_PROTO_PASSWORD` �
 
 Open **Field lab → Admin** (`/prototype/admin/`) while signed in as an admin. Pending users can be **Approved** or **Rejected**.
 
+## 6. Profile (name & organization)
+
+Approved users can open **Field lab → Profile** (`/prototype/profile/`) to set display name and organization.
+
+On an **existing** Supabase project, run [`supabase/migrations/20250515_epic_0_1_profile.sql`](../supabase/migrations/20250515_epic_0_1_profile.sql) in the SQL Editor.
+
+## 7. Email verification
+
+1. **Authentication → Providers → Email** — enable **Confirm email** if you require verification before sign-in.
+2. After sign-up, users see **Check your inbox** with **Resend verification email**.
+3. Add your app URLs under **Redirect URLs** (same as Site URL / `/**`).
+
+## 8. Password reset
+
+1. **Authentication → URL configuration** — ensure redirect URLs include your reset page, e.g.  
+   `http://54.177.153.205/prototype/reset-password/**`  
+   (and the same for GitHub Pages with `/WW-web` prefix if used:  
+   `https://<org>.github.io/WW-web/prototype/reset-password/**`)
+2. Users click **Forgot password?** on sign-in, enter email, then open the link in the email.
+3. Set a new password on `/prototype/reset-password/`, then sign in again.
+
+Optional: **Authentication → Email Templates** → customize the reset message.
+
 ## Demo mode (no Supabase)
 
 If Supabase env vars are missing, the app falls back to a single shared demo account (`NEXT_PUBLIC_PROTO_EMAIL` / `NEXT_PUBLIC_PROTO_PASSWORD` in `.env.example`).

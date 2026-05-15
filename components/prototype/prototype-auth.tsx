@@ -10,12 +10,17 @@ import {
   useState,
 } from "react";
 
+import { getPasswordResetRedirectUrl } from "@/lib/prototype/auth-url";
+import { isEmailConfirmed, isUnconfirmedEmailError } from "@/lib/prototype/auth-session";
 import {
   fetchProfile,
   getSupabaseClient,
   isSupabaseConfigured,
+  updateProfileFields,
 } from "@/lib/supabase/client";
-import type { Profile } from "@/lib/supabase/types";
+import type { Profile, ProfileUpdate } from "@/lib/supabase/types";
+
+export type AuthResult = { ok: boolean; error?: string; needsEmailConfirmation?: boolean };
 
 const DEMO_STORAGE_KEY = "weedwatch_proto_session_v2";
 /** Avoid infinite "Loading…" if Supabase is unreachable or getSession hangs */
@@ -31,6 +36,7 @@ export type AuthMode = "supabase" | "demo";
 export type GateState =
   | "loading"
   | "signed_out"
+  | "email_unverified"
   | "pending"
   | "rejected"
   | "approved";
@@ -44,8 +50,12 @@ type PrototypeAuthContextValue = {
   profile: Profile | null;
   isAdmin: boolean;
   expectedEmail: string;
-  signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  signUp: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  signIn: (email: string, password: string) => Promise<AuthResult>;
+  signUp: (email: string, password: string) => Promise<AuthResult>;
+  requestPasswordReset: (email: string) => Promise<AuthResult>;
+  updatePassword: (password: string) => Promise<AuthResult>;
+  resendVerificationEmail: (email: string) => Promise<AuthResult>;
+  saveProfile: (fields: ProfileUpdate) => Promise<AuthResult>;
   signOut: () => Promise<void>;
   /** @deprecated Use signOut */
   logout: () => Promise<void>;
@@ -200,7 +210,16 @@ export function PrototypeAuthProvider({
         password,
       });
 
-      if (error) return { ok: false, error: error.message };
+      if (error) {
+        if (isUnconfirmedEmailError(error.message)) {
+          return {
+            ok: false,
+            error: "Confirm your email before signing in.",
+            needsEmailConfirmation: true,
+          };
+        }
+        return { ok: false, error: error.message };
+      }
 
       if (data.user) {
         const next = await fetchProfile(client, data.user.id);
@@ -243,6 +262,86 @@ export function PrototypeAuthProvider({
       setSupabaseSession(data.session);
     }
 
+    const needsEmailConfirmation = Boolean(data.user && !data.session);
+    return { ok: true, needsEmailConfirmation };
+  }, [mode]);
+
+  const resendVerificationEmail = useCallback(async (email: string) => {
+    if (mode === "demo") {
+      return { ok: false, error: "Email verification requires Supabase." };
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return { ok: false, error: "Supabase is not configured." };
+    }
+
+    const { error } = await client.auth.resend({
+      type: "signup",
+      email: email.trim(),
+    });
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  }, [mode]);
+
+  const saveProfile = useCallback(
+    async (fields: ProfileUpdate) => {
+      if (mode === "demo") {
+        return { ok: false, error: "Profile save requires Supabase." };
+      }
+
+      const client = getSupabaseClient();
+      const userId = supabaseSession?.user?.id;
+      if (!client || !userId) {
+        return { ok: false, error: "Not signed in." };
+      }
+
+      const { profile: next, error } = await updateProfileFields(client, userId, fields);
+      if (error) return { ok: false, error };
+      if (next) setProfile(next);
+      return { ok: true };
+    },
+    [mode, supabaseSession?.user?.id],
+  );
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    if (mode === "demo") {
+      return {
+        ok: false,
+        error: "Password reset requires Supabase. Configure NEXT_PUBLIC_SUPABASE_URL and ANON_KEY.",
+      };
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return { ok: false, error: "Supabase is not configured." };
+    }
+
+    const { error } = await client.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: getPasswordResetRedirectUrl(),
+    });
+
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  }, [mode]);
+
+  const updatePassword = useCallback(async (password: string) => {
+    if (mode === "demo") {
+      return { ok: false, error: "Password reset is not available in demo mode." };
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      return { ok: false, error: "Supabase is not configured." };
+    }
+
+    if (password.length < 8) {
+      return { ok: false, error: "Password must be at least 8 characters." };
+    }
+
+    const { error } = await client.auth.updateUser({ password });
+    if (error) return { ok: false, error: error.message };
     return { ok: true };
   }, [mode]);
 
@@ -272,6 +371,7 @@ export function PrototypeAuthProvider({
     if (!ready) return "loading";
     if (mode === "demo") return demoSession ? "approved" : "signed_out";
     if (!supabaseSession) return "signed_out";
+    if (!isEmailConfirmed(supabaseSession)) return "email_unverified";
     return gateFromProfile(profile);
   }, [ready, mode, demoSession, supabaseSession, profile]);
 
@@ -289,6 +389,10 @@ export function PrototypeAuthProvider({
       expectedEmail,
       signIn,
       signUp,
+      requestPasswordReset,
+      updatePassword,
+      resendVerificationEmail,
+      saveProfile,
       signOut,
       logout: signOut,
       refreshProfile,
@@ -304,6 +408,10 @@ export function PrototypeAuthProvider({
       expectedEmail,
       signIn,
       signUp,
+      requestPasswordReset,
+      updatePassword,
+      resendVerificationEmail,
+      saveProfile,
       signOut,
       refreshProfile,
     ],
