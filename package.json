@@ -3,20 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1 --webpack",
+    "dev:webpack": "next dev --hostname 127.0.0.1 --webpack",
     "build": "next build",
-    "start": "next start",
+    "build:static": "STATIC_EXPORT=1 NEXT_PUBLIC_BASE_PATH=/WW-web next build",
+    "preview": "next build && next start --hostname 127.0.0.1",
+    "preview:pages": "npm run build:static && npx --yes serve@14 out --listen 3000",
+    "start": "next start --hostname 127.0.0.1",
     "lint": "eslint"
   },
   "dependencies": {
+    "@mapbox/mapbox-gl-draw": "1.4.3",
+    "@supabase/supabase-js": "^2.49.8",
     "framer-motion": "^12.38.0",
-    "geist": "^1.7.0",
+    "geist": "1.7.0",
+    "maplibre-gl": "^5.24.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-map-gl": "^8.1.1",
+    "recharts": "^2.15.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/geojson": "^7946.0.16",
+    "@types/mapbox__mapbox-gl-draw": "^1.4.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

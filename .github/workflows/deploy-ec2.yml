@@ -1,0 +1,64 @@
+# Field lab (prototype) → EC2 nginx. Does NOT replace or modify deploy.yml (GitHub Pages marketing).
+#
+# Marketing site: unchanged — still built with NEXT_PUBLIC_BASE_PATH=/WW-web via "Deploy to GitHub Pages".
+# EC2 build: no base path; only runs on prototype/shared-deps paths below (or manual dispatch).
+
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/prototype/**"
+      - "components/prototype/**"
+      - "lib/prototype/**"
+      - "lib/supabase/**"
+      - "supabase/**"
+      - "scripts/ec2/**"
+      - ".github/workflows/deploy-ec2.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.ts"
+      - "tsconfig.json"
+      - "postcss.config.mjs"
+      - "eslint.config.mjs"
+      - "app/globals.css"
+      - "app/layout.tsx"
+      - "app/favicon.ico"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, weedwatch]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export (EC2 / app host — not GitHub Pages)
+        env:
+          STATIC_EXPORT: "1"
+          # Intentionally no NEXT_PUBLIC_BASE_PATH (marketing Pages uses /WW-web in deploy.yml)
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Publish to nginx web root
+        run: bash scripts/ec2/publish-static.sh
+
+      - name: Smoke check index
+        run: test -f /var/www/weedwatch/index.html

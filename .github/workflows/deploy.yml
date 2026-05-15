@@ -1,3 +1,4 @@
+# Marketing site → GitHub Pages (base path /WW-web). Unchanged by deploy-ec2.yml (Field lab on EC2).
 name: Deploy to GitHub Pages
 
 on:
@@ -35,6 +36,11 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+          STATIC_EXPORT: "1"
+          NEXT_PUBLIC_BASE_PATH: "/WW-web"
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Upload artifact

@@ -52,6 +52,13 @@ body {
   50%       { transform: translateY(6px); }
 }
 
+/* Mapbox Draw vertex handles above satellite tiles (MapLibre class names) */
+.maplibregl-map .mapbox-gl-draw_point,
+.maplibregl-map .mapbox-gl-draw_vertex,
+.maplibregl-map .mapbox-gl-draw_midpoint {
+  pointer-events: auto;
+}
+
 .grain-overlay::after {
   content: "";
   position: fixed;
