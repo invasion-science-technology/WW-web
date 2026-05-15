@@ -10,12 +10,12 @@ import {
   useState,
 } from "react";
 
+import { resolvePrototypeAuthMode, type PrototypeAuthMode } from "@/lib/prototype/auth-config";
 import { getPasswordResetRedirectUrl } from "@/lib/prototype/auth-url";
 import { isEmailConfirmed, isUnconfirmedEmailError } from "@/lib/prototype/auth-session";
 import {
   fetchProfile,
   getSupabaseClient,
-  isSupabaseConfigured,
   updateProfileFields,
 } from "@/lib/supabase/client";
 import type { Profile, ProfileUpdate } from "@/lib/supabase/types";
@@ -31,12 +31,13 @@ export type PrototypeSession = {
   signedInAt: string;
 };
 
-export type AuthMode = "supabase" | "demo";
+export type AuthMode = PrototypeAuthMode;
 
 export type GateState =
   | "loading"
   | "signed_out"
   | "email_unverified"
+  | "profile_error"
   | "pending"
   | "rejected"
   | "approved";
@@ -45,6 +46,7 @@ type PrototypeAuthContextValue = {
   mode: AuthMode;
   ready: boolean;
   gateState: GateState;
+  profileLoadError: string | null;
   session: PrototypeSession | null;
   supabaseSession: Session | null;
   profile: Profile | null;
@@ -86,8 +88,7 @@ function writeDemoSession(session: PrototypeSession | null) {
   }
 }
 
-function gateFromProfile(profile: Profile | null): GateState {
-  if (!profile) return "signed_out";
+function gateFromProfile(profile: Profile): GateState {
   if (profile.status === "approved") return "approved";
   if (profile.status === "rejected") return "rejected";
   return "pending";
@@ -98,7 +99,7 @@ export function PrototypeAuthProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const mode: AuthMode = isSupabaseConfigured() ? "supabase" : "demo";
+  const mode: AuthMode = resolvePrototypeAuthMode();
   const expectedEmail = (
     process.env.NEXT_PUBLIC_PROTO_EMAIL?.trim().toLowerCase() ||
     "demo@weedwatch.local"
@@ -110,16 +111,44 @@ export function PrototypeAuthProvider({
   const [demoSession, setDemoSession] = useState<PrototypeSession | null>(null);
   const [supabaseSession, setSupabaseSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
+
+  const loadProfileForUser = useCallback(
+    async (userId: string) => {
+      const client = getSupabaseClient();
+      if (!client) {
+        setProfile(null);
+        setProfileLoadError("Supabase is not configured.");
+        return;
+      }
+
+      setProfileLoading(true);
+      setProfileLoadError(null);
+      const { profile: next, error } = await fetchProfile(client, userId);
+      setProfileLoading(false);
+
+      if (error || !next) {
+        setProfile(null);
+        setProfileLoadError(error ?? "Could not load profile.");
+        return;
+      }
+
+      setProfile(next);
+      setProfileLoadError(null);
+    },
+    [],
+  );
 
   const refreshProfile = useCallback(async () => {
-    const client = getSupabaseClient();
-    if (!client || !supabaseSession?.user?.id) {
+    const userId = supabaseSession?.user?.id;
+    if (!userId) {
       setProfile(null);
+      setProfileLoadError(null);
       return;
     }
-    const next = await fetchProfile(client, supabaseSession.user.id);
-    setProfile(next);
-  }, [supabaseSession?.user?.id]);
+    await loadProfileForUser(userId);
+  }, [supabaseSession?.user?.id, loadProfileForUser]);
 
   useEffect(() => {
     if (mode === "demo") {
@@ -148,11 +177,24 @@ export function PrototypeAuthProvider({
     const sync = async (session: Session | null) => {
       setSupabaseSession(session);
       if (!session?.user?.id) {
-        if (!cancelled) setProfile(null);
+        if (!cancelled) {
+          setProfile(null);
+          setProfileLoadError(null);
+          setProfileLoading(false);
+        }
         return;
       }
-      const next = await fetchProfile(client, session.user.id);
-      if (!cancelled) setProfile(next);
+      if (!cancelled) setProfileLoading(true);
+      const { profile: next, error } = await fetchProfile(client, session.user.id);
+      if (cancelled) return;
+      setProfileLoading(false);
+      if (error || !next) {
+        setProfile(null);
+        setProfileLoadError(error ?? "Could not load profile.");
+        return;
+      }
+      setProfile(next);
+      setProfileLoadError(null);
     };
 
     const timeoutId = window.setTimeout(finishInit, AUTH_INIT_TIMEOUT_MS);
@@ -186,6 +228,13 @@ export function PrototypeAuthProvider({
 
   const signIn = useCallback(
     async (email: string, password: string) => {
+      if (mode === "unconfigured") {
+        return {
+          ok: false,
+          error: "Configure Supabase or set NEXT_PUBLIC_PROTO_DEMO_MODE=1 for local demo.",
+        };
+      }
+
       if (mode === "demo") {
         const ok =
           email.trim().toLowerCase() === expectedEmail &&
@@ -222,17 +271,23 @@ export function PrototypeAuthProvider({
       }
 
       if (data.user) {
-        const next = await fetchProfile(client, data.user.id);
-        setProfile(next);
         setSupabaseSession(data.session);
+        await loadProfileForUser(data.user.id);
       }
 
       return { ok: true };
     },
-    [mode, expectedEmail, expectedPassword],
+    [mode, expectedEmail, expectedPassword, loadProfileForUser],
   );
 
   const signUp = useCallback(async (email: string, password: string) => {
+    if (mode === "unconfigured") {
+      return {
+        ok: false,
+        error: "Configure Supabase or set NEXT_PUBLIC_PROTO_DEMO_MODE=1 for local demo.",
+      };
+    }
+
     if (mode === "demo") {
       return {
         ok: false,
@@ -257,14 +312,13 @@ export function PrototypeAuthProvider({
     if (error) return { ok: false, error: error.message };
 
     if (data.user) {
-      const next = await fetchProfile(client, data.user.id);
-      setProfile(next);
       setSupabaseSession(data.session);
+      await loadProfileForUser(data.user.id);
     }
 
     const needsEmailConfirmation = Boolean(data.user && !data.session);
     return { ok: true, needsEmailConfirmation };
-  }, [mode]);
+  }, [mode, loadProfileForUser]);
 
   const resendVerificationEmail = useCallback(async (email: string) => {
     if (mode === "demo") {
@@ -356,6 +410,8 @@ export function PrototypeAuthProvider({
     if (client) await client.auth.signOut();
     setSupabaseSession(null);
     setProfile(null);
+    setProfileLoadError(null);
+    setProfileLoading(false);
   }, [mode]);
 
   const session: PrototypeSession | null = useMemo(() => {
@@ -369,11 +425,22 @@ export function PrototypeAuthProvider({
 
   const gateState: GateState = useMemo(() => {
     if (!ready) return "loading";
+    if (mode === "unconfigured") return "signed_out";
     if (mode === "demo") return demoSession ? "approved" : "signed_out";
     if (!supabaseSession) return "signed_out";
     if (!isEmailConfirmed(supabaseSession)) return "email_unverified";
+    if (profileLoading) return "loading";
+    if (!profile) return profileLoadError ? "profile_error" : "loading";
     return gateFromProfile(profile);
-  }, [ready, mode, demoSession, supabaseSession, profile]);
+  }, [
+    ready,
+    mode,
+    demoSession,
+    supabaseSession,
+    profile,
+    profileLoading,
+    profileLoadError,
+  ]);
 
   const isAdmin = profile?.role === "admin" && profile.status === "approved";
 
@@ -382,6 +449,7 @@ export function PrototypeAuthProvider({
       mode,
       ready,
       gateState,
+      profileLoadError,
       session,
       supabaseSession,
       profile,
@@ -401,6 +469,7 @@ export function PrototypeAuthProvider({
       mode,
       ready,
       gateState,
+      profileLoadError,
       session,
       supabaseSession,
       profile,

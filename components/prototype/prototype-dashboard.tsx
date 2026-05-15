@@ -13,11 +13,11 @@ import {
 import { demoStats, demoWeedGeoJson } from "@/lib/prototype/demo-weed";
 import { cumulativeGddSeries, formatISODateLocal } from "@/lib/prototype/gdd";
 import {
-  centroidInCalifornia,
   collectionCentroid,
   envelopePolygon,
   formatCollectionArea,
   listDrawnPolygons,
+  polygonsInCalifornia,
 } from "@/lib/prototype/geo";
 import { fetchArchiveDaily, fetchForecastDaily } from "@/lib/prototype/meteo";
 
@@ -32,7 +32,7 @@ const FieldMap = dynamic(() => import("@/components/prototype/field-map"), {
 
 /** Mock Airbus OneAtlas–style pipeline (no live API calls). */
 const TASKING_PIPELINE_STEPS: { label: string; detail: string }[] = [
-  { label: "Validate AOI", detail: "Polygon closed, inside California sandbox (local checks)" },
+  { label: "Validate AOI", detail: "All vertices inside California sandbox (local checks)" },
   { label: "OneAtlas feasibility", detail: "Neo contract · collection window (mock — always feasible)" },
   { label: "Price quote", detail: "Per km² / attempt estimate (mock)" },
   { label: "Submit order", detail: "POST /orders → orderId (mock)" },
@@ -49,10 +49,17 @@ function mockOrderId(): string {
 }
 
 const defaultPlantingDate = () => {
-  const d = new Date();
-  d.setMonth(2, 15);
-  return formatISODateLocal(d);
+  const now = new Date();
+  const planting = new Date(now.getFullYear(), 2, 15);
+  if (now < planting) {
+    planting.setFullYear(planting.getFullYear() - 1);
+  }
+  return formatISODateLocal(planting);
 };
+
+const METEO_DEBOUNCE_MS = 400;
+const GDD_BASE_MIN = -10;
+const GDD_BASE_MAX = 35;
 
 export default function PrototypeDashboard() {
   const [drawn, setDrawn] = useState<FeatureCollection | null>(null);
@@ -70,6 +77,11 @@ export default function PrototypeDashboard() {
   >([]);
   const [gddRows, setGddRows] = useState<{ date: string; cumulative: number }[]>([]);
   const [meteoNote, setMeteoNote] = useState<string | null>(null);
+  const [gddNote, setGddNote] = useState<string | null>(null);
+  const [debouncedCentroid, setDebouncedCentroid] = useState<{
+    lat: number;
+    lon: number;
+  } | null>(null);
 
   const [plantingDate, setPlantingDate] = useState(defaultPlantingDate);
   const [baseTempC, setBaseTempC] = useState(10);
@@ -93,8 +105,23 @@ export default function PrototypeDashboard() {
 
   const fieldArea = useMemo(() => formatCollectionArea(drawn), [drawn]);
 
+  const effectiveBaseTempC = Number.isFinite(baseTempC)
+    ? Math.min(GDD_BASE_MAX, Math.max(GDD_BASE_MIN, baseTempC))
+    : 10;
+
   useEffect(() => {
     if (!centroid) {
+      queueMicrotask(() => setDebouncedCentroid(null));
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      setDebouncedCentroid(centroid);
+    }, METEO_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [centroid]);
+
+  useEffect(() => {
+    if (!debouncedCentroid) {
       queueMicrotask(() => {
         setForecastRows([]);
         setMeteoNote(null);
@@ -105,7 +132,11 @@ export default function PrototypeDashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const daily = await fetchForecastDaily(centroid.lat, centroid.lon, 14);
+        const daily = await fetchForecastDaily(
+          debouncedCentroid.lat,
+          debouncedCentroid.lon,
+          14,
+        );
         const rows = daily.dates.map((date, i) => ({
           date: date.slice(5),
           tmax: daily.tmax[i] ?? null,
@@ -126,12 +157,13 @@ export default function PrototypeDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [centroid]);
+  }, [debouncedCentroid]);
 
   useEffect(() => {
-    if (!centroid) {
+    if (!debouncedCentroid) {
       queueMicrotask(() => {
         setGddRows([]);
+        setGddNote(null);
       });
       return;
     }
@@ -140,20 +172,29 @@ export default function PrototypeDashboard() {
     (async () => {
       try {
         const end = formatISODateLocal(new Date());
-        const archive = await fetchArchiveDaily(centroid.lat, centroid.lon, plantingDate, end);
-        const series = cumulativeGddSeries(archive, baseTempC);
+        const archive = await fetchArchiveDaily(
+          debouncedCentroid.lat,
+          debouncedCentroid.lon,
+          plantingDate,
+          end,
+        );
+        const series = cumulativeGddSeries(archive, effectiveBaseTempC);
         if (!cancelled) {
           setGddRows(series.map((p) => ({ date: p.date.slice(5), cumulative: p.cumulative })));
+          setGddNote(null);
         }
-      } catch {
-        if (!cancelled) setGddRows([]);
+      } catch (e) {
+        if (!cancelled) {
+          setGddRows([]);
+          setGddNote(e instanceof Error ? e.message : "GDD archive request failed");
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [centroid, plantingDate, baseTempC]);
+  }, [debouncedCentroid, plantingDate, effectiveBaseTempC]);
 
   useEffect(() => {
     return () => {
@@ -163,9 +204,9 @@ export default function PrototypeDashboard() {
 
   const runJob = useCallback(() => {
     if (!fieldPolygons.length || !fieldPolygon || !centroid || jobRunning) return;
-    if (!centroidInCalifornia(centroid.lat, centroid.lon)) {
+    if (!polygonsInCalifornia(fieldPolygons)) {
       setJobError(
-        "Prototype sandbox: polygon centroid must fall inside California. Pan/zoom and redraw.",
+        "Prototype sandbox: every polygon vertex must lie inside California. Pan/zoom and redraw.",
       );
       return;
     }
@@ -358,14 +399,25 @@ export default function PrototypeDashboard() {
               <input
                 type="number"
                 step={0.5}
+                min={GDD_BASE_MIN}
+                max={GDD_BASE_MAX}
                 value={baseTempC}
-                onChange={(e) => setBaseTempC(Number(e.target.value))}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  setBaseTempC(Number.isFinite(next) ? next : 10);
+                }}
                 className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
               />
             </label>
+            {!Number.isFinite(baseTempC) || baseTempC < GDD_BASE_MIN || baseTempC > GDD_BASE_MAX ? (
+              <p className="text-xs text-amber-400">
+                Using {effectiveBaseTempC}°C (valid range {GDD_BASE_MIN}–{GDD_BASE_MAX}).
+              </p>
+            ) : null}
             <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
               Uses archive daily min/max at centroid: daily increment is max(0, mean − base).
             </p>
+            {gddNote ? <p className="text-xs text-amber-400">{gddNote}</p> : null}
             <GddChart data={gddRows} />
           </div>
 

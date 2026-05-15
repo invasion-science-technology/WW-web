@@ -1,13 +1,19 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
 
 export default function PrototypeShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const { session, gateState, isAdmin, signOut, mode } = usePrototypeAuth();
   const showNav = gateState === "approved";
+  const onProfileWhilePending =
+    gateState === "pending" && pathname?.startsWith("/prototype/profile");
+  const showSessionActions =
+    showNav || gateState === "profile_error" || onProfileWhilePending;
 
   return (
     <div className="relative z-10 min-h-screen flex flex-col bg-[var(--color-background)]">
@@ -26,15 +32,17 @@ export default function PrototypeShell({ children }: { children: ReactNode }) {
             </span>
           </div>
           <nav className="flex items-center gap-2 shrink-0">
-            {showNav && session ? (
+            {showSessionActions && session ? (
               <>
-                <Link
-                  href="/prototype/profile"
-                  className="text-xs sm:text-sm px-3 py-2 rounded-full border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-dim)] hover:text-[var(--color-text-primary)] transition-colors"
-                >
-                  Profile
-                </Link>
-                {isAdmin ? (
+                {showNav || onProfileWhilePending ? (
+                  <Link
+                    href="/prototype/profile"
+                    className="text-xs sm:text-sm px-3 py-2 rounded-full border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-dim)] hover:text-[var(--color-text-primary)] transition-colors"
+                  >
+                    Profile
+                  </Link>
+                ) : null}
+                {showNav && isAdmin ? (
                   <Link
                     href="/prototype/admin"
                     className="text-xs sm:text-sm px-3 py-2 rounded-full border border-[var(--color-border)] text-[var(--color-accent)] hover:border-[var(--color-accent-dim)] transition-colors"
@@ -55,7 +63,11 @@ export default function PrototypeShell({ children }: { children: ReactNode }) {
               </>
             ) : gateState === "signed_out" ? (
               <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-secondary)]">
-                {mode === "supabase" ? "Sign in required" : "Demo"}
+                {mode === "supabase"
+                  ? "Sign in required"
+                  : mode === "demo"
+                    ? "Demo"
+                    : "Configure auth"}
               </span>
             ) : null}
             <Link

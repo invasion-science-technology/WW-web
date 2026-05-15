@@ -94,7 +94,7 @@ export default function PrototypeLogin() {
     <div className="min-h-[70vh] flex items-center justify-center px-6 py-10">
       <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 shadow-xl">
         <p className="text-xs uppercase tracking-wider text-[var(--color-accent-dim)] font-medium">
-          Field lab · {mode === "supabase" ? "Account" : "Demo"}
+          Field lab · {mode === "supabase" ? "Account" : mode === "demo" ? "Demo" : "Setup required"}
         </p>
         <h1 className="mt-2 text-xl font-semibold text-[var(--color-text-primary)]">
           {tab === "signin"
@@ -109,10 +109,16 @@ export default function PrototypeLogin() {
               Sign up for the no-pay prototype. New accounts stay <strong className="text-[var(--color-text-primary)]">pending</strong> until
               an admin approves them.
             </>
+          ) : mode === "demo" ? (
+            <>
+              Demo mode (local only): shared account. Set Supabase env vars on EC2 for production auth. Email:{" "}
+              <span className="font-mono text-[var(--color-text-primary)] text-xs">{expectedEmail}</span>
+            </>
           ) : (
             <>
-              Demo mode: single shared account. Set Supabase env vars for real sign-up and approval. Default:{" "}
-              <span className="font-mono text-[var(--color-text-primary)] text-xs">{expectedEmail}</span>
+              Authentication is not configured. Set <span className="font-mono text-xs">NEXT_PUBLIC_SUPABASE_URL</span> and{" "}
+              <span className="font-mono text-xs">NEXT_PUBLIC_SUPABASE_ANON_KEY</span> at build time, or enable local demo with{" "}
+              <span className="font-mono text-xs">NEXT_PUBLIC_PROTO_DEMO_MODE=1</span>.
             </>
           )}
         </p>
@@ -262,7 +268,7 @@ export default function PrototypeLogin() {
           ) : null}
           <button
             type="submit"
-            disabled={busy || (mode === "demo" && tab === "signup")}
+            disabled={busy || mode === "unconfigured" || (mode === "demo" && tab === "signup")}
             className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-[#052e16] hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {busy

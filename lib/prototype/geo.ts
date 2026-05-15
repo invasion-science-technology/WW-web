@@ -6,6 +6,7 @@ const M2_PER_ACRE = 4046.8564224;
 
 export type LonLat = [number, number];
 
+/** Vertex average — legacy; prefer polygonGeodesicCentroid for tasking. */
 export function polygonCentroid(coords: LonLat[][]): LonLat {
   const outer = coords[0];
   if (!outer?.length) return [0, 0];
@@ -17,6 +18,33 @@ export function polygonCentroid(coords: LonLat[][]): LonLat {
     sy += outer[i][1];
   }
   return [sx / n, sy / n];
+}
+
+/** Centroid on the sphere (WGS84) from outer ring vertices. */
+export function polygonGeodesicCentroid(poly: Polygon): LonLat {
+  const ring = poly.coordinates[0] as LonLat[] | undefined;
+  if (!ring?.length) return [0, 0];
+
+  const n = ring.length - 1;
+  if (n < 1) return [0, 0];
+
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  for (let i = 0; i < n; i++) {
+    const [lon, lat] = ring[i];
+    const λ = (lon * Math.PI) / 180;
+    const φ = (lat * Math.PI) / 180;
+    x += Math.cos(φ) * Math.cos(λ);
+    y += Math.cos(φ) * Math.sin(λ);
+    z += Math.sin(φ);
+  }
+  x /= n;
+  y /= n;
+  z /= n;
+  const lon = (Math.atan2(y, x) * 180) / Math.PI;
+  const lat = (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI;
+  return [lon, lat];
 }
 
 export function featurePolygon(feature: Feature): Polygon | null {
@@ -62,7 +90,7 @@ export function collectionCentroid(fc: FeatureCollection | null): LonLat | null 
   const polys = listDrawnPolygons(fc);
   if (!polys.length) return null;
   if (polys.length === 1) {
-    return polygonCentroid(polys[0].coordinates as LonLat[][]);
+    return polygonGeodesicCentroid(polys[0]);
   }
 
   let sumLon = 0;
@@ -70,13 +98,13 @@ export function collectionCentroid(fc: FeatureCollection | null): LonLat | null 
   let sumArea = 0;
   for (const poly of polys) {
     const m2 = polygonAreaSquareMeters(poly) ?? 0;
-    const [lon, lat] = polygonCentroid(poly.coordinates as LonLat[][]);
+    const [lon, lat] = polygonGeodesicCentroid(poly);
     sumLon += lon * m2;
     sumLat += lat * m2;
     sumArea += m2;
   }
   if (sumArea <= 0) {
-    return polygonCentroid(polys[0].coordinates as LonLat[][]);
+    return polygonGeodesicCentroid(polys[0]);
   }
   return [sumLon / sumArea, sumLat / sumArea];
 }
@@ -204,13 +232,33 @@ const CA_BOUNDS = {
   east: -114.0,
 } as const;
 
-export function centroidInCalifornia(lat: number, lon: number): boolean {
+export function pointInCalifornia(lat: number, lon: number): boolean {
   return (
     lat >= CA_BOUNDS.south &&
     lat <= CA_BOUNDS.north &&
     lon >= CA_BOUNDS.west &&
     lon <= CA_BOUNDS.east
   );
+}
+
+/** @deprecated Use pointInCalifornia */
+export function centroidInCalifornia(lat: number, lon: number): boolean {
+  return pointInCalifornia(lat, lon);
+}
+
+/** Every vertex of every polygon must lie inside the CA sandbox. */
+export function polygonsInCalifornia(polys: Polygon[]): boolean {
+  if (!polys.length) return false;
+  for (const poly of polys) {
+    const ring = poly.coordinates[0] as LonLat[] | undefined;
+    if (!ring?.length) return false;
+    const n = ring.length - 1;
+    for (let i = 0; i < n; i++) {
+      const [lon, lat] = ring[i];
+      if (!pointInCalifornia(lat, lon)) return false;
+    }
+  }
+  return true;
 }
 
 export function bboxFromPolygon(poly: Polygon): {

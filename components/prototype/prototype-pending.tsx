@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
 
 export default function PrototypePending({
@@ -28,10 +30,19 @@ export default function PrototypePending({
             <>
               Thanks for signing up as{" "}
               <strong className="text-[var(--color-text-primary)]">{profile?.email}</strong>. An admin must
-              approve your account before you can use the map and mock acquisition tools.
+              approve your account before you can use the map and mock acquisition tools. You can still
+              complete your profile while you wait.
             </>
           )}
         </p>
+        {variant === "pending" ? (
+          <Link
+            href="/prototype/profile"
+            className="mt-4 block w-full text-center rounded-xl bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-[#052e16] hover:opacity-90"
+          >
+            Edit profile
+          </Link>
+        ) : null}
         <button
           type="button"
           onClick={() => void signOut()}

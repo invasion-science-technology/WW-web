@@ -89,6 +89,15 @@ export default function FieldMap({
     null,
   );
 
+  const syncDrawState = useCallback(
+    (draw: MapboxDraw) => {
+      const collection = readDrawFeatures(draw);
+      setAreaDisplay(formatCollectionArea(collection));
+      onDrawChange(collection);
+    },
+    [onDrawChange],
+  );
+
   const handleDraw = useCallback(
     (collection: FeatureCollection | null) => {
       setAreaDisplay(formatCollectionArea(collection));
@@ -96,6 +105,14 @@ export default function FieldMap({
     },
     [onDrawChange],
   );
+
+  const exitDrawMode = useCallback(() => {
+    const map = mapRef.current?.getMap();
+    if (map?.doubleClickZoom) {
+      map.doubleClickZoom.enable();
+    }
+    setDrawMode("simple_select");
+  }, []);
 
   const attachDraw = useCallback(
     (map: MapLibreMap) => {
@@ -160,17 +177,31 @@ export default function FieldMap({
     if (!draw) return;
     draw.deleteAll();
     draw.changeMode("simple_select");
-    setDrawMode("simple_select");
+    exitDrawMode();
     setAreaDisplay(null);
     onDrawChange(null);
-  }, [onDrawChange]);
+  }, [onDrawChange, exitDrawMode]);
 
   const cancelDraw = useCallback(() => {
     const draw = drawRef.current;
     if (!draw) return;
+    try {
+      draw.trash();
+    } catch {
+      /* no selection */
+    }
     draw.changeMode("simple_select");
-    setDrawMode("simple_select");
-  }, []);
+    exitDrawMode();
+    syncDrawState(draw);
+  }, [exitDrawMode, syncDrawState]);
+
+  useEffect(() => {
+    const map = mapRef.current?.getMap();
+    if (!map) return;
+    if (drawMode !== "draw_polygon") {
+      map.doubleClickZoom.enable();
+    }
+  }, [drawMode]);
 
   useEffect(() => {
     const map = mapRef.current?.getMap();

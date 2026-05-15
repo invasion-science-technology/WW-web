@@ -5,7 +5,12 @@ import { usePathname } from "next/navigation";
 import PrototypeEmailVerify from "@/components/prototype/prototype-email-verify";
 import PrototypeLogin from "@/components/prototype/prototype-login";
 import PrototypePending from "@/components/prototype/prototype-pending";
+import PrototypeProfileError from "@/components/prototype/prototype-profile-error";
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
+
+function isProfileRoute(pathname: string | null): boolean {
+  return Boolean(pathname?.startsWith("/prototype/profile"));
+}
 
 export default function PrototypeGate({
   children,
@@ -37,7 +42,11 @@ export default function PrototypeGate({
       />
     );
   }
-  if (gateState === "pending") return <PrototypePending variant="pending" />;
+  if (gateState === "profile_error") return <PrototypeProfileError />;
+  if (gateState === "pending") {
+    if (isProfileRoute(pathname)) return <>{children}</>;
+    return <PrototypePending variant="pending" />;
+  }
   if (gateState === "rejected") return <PrototypePending variant="rejected" />;
 
   return <>{children}</>;

@@ -34,10 +34,15 @@ export function getSupabaseClient(): SupabaseClient | null {
   return browserClient;
 }
 
+export type FetchProfileResult = {
+  profile: Profile | null;
+  error?: string;
+};
+
 export async function fetchProfile(
   client: SupabaseClient,
   userId: string,
-): Promise<Profile | null> {
+): Promise<FetchProfileResult> {
   const { data, error } = await client
     .from("profiles")
     .select("id, email, display_name, organization, status, role, created_at, updated_at")
@@ -46,10 +51,17 @@ export async function fetchProfile(
 
   if (error) {
     console.error("[profiles]", error.message);
-    return null;
+    return { profile: null, error: error.message };
   }
 
-  return data as Profile | null;
+  if (!data) {
+    return {
+      profile: null,
+      error: "Account profile not found. Contact support or try signing in again.",
+    };
+  }
+
+  return { profile: data as Profile };
 }
 
 export async function updateProfileFields(
