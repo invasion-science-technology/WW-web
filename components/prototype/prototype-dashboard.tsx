@@ -14,9 +14,10 @@ import { demoStats, demoWeedGeoJson } from "@/lib/prototype/demo-weed";
 import { cumulativeGddSeries, formatISODateLocal } from "@/lib/prototype/gdd";
 import {
   centroidInCalifornia,
-  drawnPolygonCollection,
-  formatPolygonArea,
-  polygonCentroid,
+  collectionCentroid,
+  envelopePolygon,
+  formatCollectionArea,
+  listDrawnPolygons,
 } from "@/lib/prototype/geo";
 import { fetchArchiveDaily, fetchForecastDaily } from "@/lib/prototype/meteo";
 
@@ -77,21 +78,20 @@ export default function PrototypeDashboard() {
 
   const timersRef = useRef<number[]>([]);
 
-  const fieldPolygon = useMemo(() => {
-    const poly = drawnPolygonCollection(drawn);
-    return poly;
-  }, [drawn]);
+  const fieldPolygons = useMemo(() => listDrawnPolygons(drawn), [drawn]);
+
+  const fieldPolygon = useMemo(
+    () => envelopePolygon(fieldPolygons),
+    [fieldPolygons],
+  );
 
   const centroid = useMemo(() => {
-    if (!fieldPolygon) return null;
-    const c = polygonCentroid(fieldPolygon.coordinates as [number, number][][]);
+    const c = collectionCentroid(drawn);
+    if (!c) return null;
     return { lat: c[1], lon: c[0] };
-  }, [fieldPolygon]);
+  }, [drawn]);
 
-  const fieldArea = useMemo(
-    () => formatPolygonArea(fieldPolygon),
-    [fieldPolygon],
-  );
+  const fieldArea = useMemo(() => formatCollectionArea(drawn), [drawn]);
 
   useEffect(() => {
     if (!centroid) {
@@ -162,7 +162,7 @@ export default function PrototypeDashboard() {
   }, []);
 
   const runJob = useCallback(() => {
-    if (!fieldPolygon || !centroid || jobRunning) return;
+    if (!fieldPolygons.length || !fieldPolygon || !centroid || jobRunning) return;
     if (!centroidInCalifornia(centroid.lat, centroid.lon)) {
       setJobError(
         "Prototype sandbox: polygon centroid must fall inside California. Pan/zoom and redraw.",
@@ -188,13 +188,16 @@ export default function PrototypeDashboard() {
     });
 
     schedule(STEP_MS * (TASKING_PIPELINE_STEPS.length + 1), () => {
-      const fc = demoWeedGeoJson(fieldPolygon, JSON.stringify(fieldPolygon.coordinates[0]));
+      const fc = demoWeedGeoJson(
+        fieldPolygon,
+        JSON.stringify(fieldPolygons.map((p) => p.coordinates[0])),
+      );
       setWeedOverlay(fc);
       setStats(demoStats(fc));
       setJobRunning(false);
       setJobStep(TASKING_PIPELINE_STEPS.length);
     });
-  }, [fieldPolygon, centroid, jobRunning]);
+  }, [fieldPolygon, fieldPolygons, centroid, jobRunning]);
 
   return (
     <div className="space-y-8">
@@ -229,7 +232,7 @@ export default function PrototypeDashboard() {
             <button
               type="button"
               onClick={runJob}
-              disabled={!fieldPolygon || jobRunning}
+              disabled={!fieldPolygons.length || jobRunning}
               className="rounded-xl bg-[var(--color-accent)] px-5 py-3 text-sm font-semibold text-[#052e16] disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
             >
               {jobRunning ? "Running mock pipeline…" : "Run acquisition (mock)"}

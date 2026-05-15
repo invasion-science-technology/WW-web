@@ -19,9 +19,8 @@ import {
   tagMapLibreCanvas,
 } from "@/lib/prototype/mapbox-draw-maplibre";
 import {
-  drawnPolygonCollection,
-  formatPolygonArea,
-  type AreaDisplay,
+  formatCollectionArea,
+  type CollectionAreaDisplay,
 } from "@/lib/prototype/geo";
 import { SATELLITE_MAP_STYLE } from "@/lib/prototype/satellite-style";
 
@@ -86,12 +85,13 @@ export default function FieldMap({
   const teardownRef = useRef<(() => void) | null>(null);
   const [drawReady, setDrawReady] = useState(false);
   const [drawMode, setDrawMode] = useState<string>("simple_select");
-  const [areaDisplay, setAreaDisplay] = useState<AreaDisplay | null>(null);
+  const [areaDisplay, setAreaDisplay] = useState<CollectionAreaDisplay | null>(
+    null,
+  );
 
   const handleDraw = useCallback(
     (collection: FeatureCollection | null) => {
-      const poly = drawnPolygonCollection(collection);
-      setAreaDisplay(formatPolygonArea(poly));
+      setAreaDisplay(formatCollectionArea(collection));
       onDrawChange(collection);
     },
     [onDrawChange],
