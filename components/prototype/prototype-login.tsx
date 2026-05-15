@@ -189,8 +189,8 @@ export default function PrototypeLogin() {
             </p>
           )}
           {tab === "signin" ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 -mt-2 text-sm">
-              {mode === "supabase" ? (
+            <div className="space-y-2 -mt-1 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -198,24 +198,29 @@ export default function PrototypeLogin() {
                     setError(null);
                     setInfo(null);
                   }}
-                  className="text-[var(--color-accent)] hover:underline"
+                  className="text-[var(--color-accent)] hover:underline font-medium"
                 >
                   Forgot password?
                 </button>
-              ) : (
-                <span />
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setTab("signup");
-                  setError(null);
-                  setInfo(null);
-                }}
-                className="text-[var(--color-accent)] hover:underline"
-              >
-                Create account
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTab("signup");
+                    setError(null);
+                    setInfo(null);
+                  }}
+                  className="text-[var(--color-accent)] hover:underline"
+                >
+                  Create account
+                </button>
+              </div>
+              {mode === "demo" ? (
+                <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
+                  Password reset needs Supabase (rebuild with{" "}
+                  <code className="text-[10px]">.env.ec2</code> — see{" "}
+                  <code className="text-[10px]">env.ec2.example</code>).
+                </p>
+              ) : null}
             </div>
           ) : null}
           {tab === "forgot" ? (
