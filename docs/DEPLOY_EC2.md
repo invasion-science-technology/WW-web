@@ -9,7 +9,7 @@ Repo: `invasion-science-technology/WW-web`
 | | Marketing (GitHub Pages) | Field lab (EC2) |
 |--|--------------------------|-----------------|
 | Workflow | [`deploy.yml`](../.github/workflows/deploy.yml) | [`deploy-ec2.yml`](../.github/workflows/deploy-ec2.yml) |
-| URL | `https://<org>.github.io/WW-web/` | `https://app.yourdomain.com/prototype/` |
+| URL | `https://<org>.github.io/WW-web/` | `http://<elastic-ip>/prototype/` or `https://prototype.weedwatch.ai/prototype/` |
 | Base path | `/WW-web` | none |
 | Triggers on `main` | **Every push** | **Prototype-related paths only** (or manual) |
 
@@ -57,15 +57,19 @@ Do **not** open SSH to `0.0.0.0/0`.
 
 Allocate → Associate with the instance. Note the IP (e.g. `54.1.2.3`).
 
-### 1.4 DNS
+### 1.4 DNS (optional for now)
 
-Create an **A record** at your DNS host:
+**No domain yet?** Skip DNS — use **Elastic IP** only (Step 2 with `--ip-only`).
+
+**When you control `weedwatch.ai` DNS**, prefer a **subdomain** (not a path on the marketing site):
 
 ```text
-app.weedwatch.ai   →   54.1.2.3
+prototype.weedwatch.ai   A   54.1.2.3
 ```
 
-Wait until `dig +short app.weedwatch.ai` returns that IP.
+Then: `sudo bash setup-web-server.sh --domain prototype.weedwatch.ai --email you@example.com`
+
+**Why not `weedwatch.ai/lab` on GitHub Pages?** Pages and EC2 are different hosts. A path like `weedwatch.ai/lab` on the **same** URL as marketing needs a reverse proxy or pointing the apex at EC2. A **subdomain** is the simple fix.
 
 ### 1.5 SSH
 
@@ -78,34 +82,46 @@ ssh -i ~/path/to/weedwatch.pem ubuntu@54.1.2.3
 
 ## Part 2 — Bootstrap EC2 (automated script)
 
-On your laptop, clone the repo (or copy scripts). On EC2 you can clone or curl scripts.
+On EC2 (after `git clone` …/WW-web and `cd scripts/ec2`, `chmod +x *.sh`):
 
-**Option A — clone on EC2 (recommended)**
+### Option A — No domain (Elastic IP only) ← start here
 
 ```bash
-ssh -i ~/path/to/weedwatch.pem ubuntu@54.1.2.3
+sudo bash setup-web-server.sh --ip-only
+```
 
-git clone https://github.com/invasion-science-technology/WW-web.git
-cd WW-web/scripts/ec2
-chmod +x setup-web-server.sh install-github-runner.sh publish-static.sh
+The script prints your public IP. Open:
 
+- `http://54.1.2.3/` (marketing copy on EC2)
+- `http://54.1.2.3/prototype/` (Field lab)
+
+**HTTPS:** Let’s Encrypt does **not** support bare IPs. Use **HTTP** for now, or add a subdomain later.
+
+**Supabase** → Authentication → URL configuration:
+
+| Field | Value |
+|--------|--------|
+| Site URL | `http://54.1.2.3` (your Elastic IP) |
+| Redirect URLs | `http://54.1.2.3/**` |
+
+### Option B — Subdomain under weedwatch.ai (when DNS is ready)
+
+```bash
+# DNS first: prototype.weedwatch.ai  A  →  Elastic IP
 sudo bash setup-web-server.sh \
-  --domain app.weedwatch.ai \
+  --domain prototype.weedwatch.ai \
   --email you@example.com
 ```
 
-- `--email` runs **certbot** (HTTPS). Omit and add `--skip-certbot` if DNS is not ready yet.
-- Re-run with `--email` once DNS works.
+Use `https://prototype.weedwatch.ai/prototype/` and set Supabase Site URL to that host (with `https`).
 
-**Option B — HTTP only first**
+### Option C — Domain known but DNS not propagated yet
 
 ```bash
-sudo bash setup-web-server.sh --domain app.weedwatch.ai --skip-certbot
-# after DNS + A record:
-sudo certbot --nginx -d app.weedwatch.ai -m you@example.com --agree-tos
+sudo bash setup-web-server.sh --domain prototype.weedwatch.ai --skip-certbot
+# later:
+sudo certbot --nginx -d prototype.weedwatch.ai -m you@example.com --agree-tos
 ```
-
-Check: `https://app.weedwatch.ai/` should show nginx default or 404 until first deploy.
 
 ---
 
@@ -163,8 +179,8 @@ Ensure `.github/workflows/deploy-ec2.yml` is on `main` (merge/push from your bra
 
 | Field | Value |
 |--------|--------|
-| Site URL | `https://app.weedwatch.ai` |
-| Redirect URLs | `https://app.weedwatch.ai/**`, `http://localhost:3000/**` |
+| Site URL | Same origin you use in the browser (`http://<elastic-ip>` or `https://prototype.weedwatch.ai`) |
+| Redirect URLs | That origin with `/**`, plus `http://localhost:3000/**` |
 
 Admin user:
 
@@ -186,8 +202,8 @@ Watch **Actions** tab. Job must run on `weedwatch` runner.
 
 Then open:
 
-- `https://app.weedwatch.ai/prototype/`
-- `https://app.weedwatch.ai/prototype/admin/` (admin)
+- `http://<elastic-ip>/prototype/` (or your subdomain equivalent)
+- `…/prototype/admin/` (admin)
 
 ---
 
