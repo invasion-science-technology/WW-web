@@ -5,9 +5,8 @@ import type { NextConfig } from "next";
  * GitHub Pages: CI sets STATIC_EXPORT=1 and NEXT_PUBLIC_BASE_PATH=/WW-web.
  */
 const staticExport = process.env.STATIC_EXPORT === "1";
-const basePath =
-  process.env.NEXT_PUBLIC_BASE_PATH?.trim() ||
-  (staticExport ? "/WW-web" : "");
+/** Only GitHub Pages sets NEXT_PUBLIC_BASE_PATH=/WW-web (see deploy.yml). EC2 must leave it unset. */
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim() ?? "";
 
 const nextConfig: NextConfig = {
   ...(staticExport

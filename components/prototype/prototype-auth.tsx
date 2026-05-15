@@ -18,6 +18,8 @@ import {
 import type { Profile } from "@/lib/supabase/types";
 
 const DEMO_STORAGE_KEY = "weedwatch_proto_session_v2";
+/** Avoid infinite "Loading…" if Supabase is unreachable or getSession hangs */
+const AUTH_INIT_TIMEOUT_MS = 8_000;
 
 export type PrototypeSession = {
   email: string;
@@ -125,6 +127,13 @@ export function PrototypeAuthProvider({
     }
 
     let cancelled = false;
+    let initDone = false;
+
+    const finishInit = () => {
+      if (cancelled || initDone) return;
+      initDone = true;
+      setReady(true);
+    };
 
     const sync = async (session: Session | null) => {
       setSupabaseSession(session);
@@ -136,12 +145,21 @@ export function PrototypeAuthProvider({
       if (!cancelled) setProfile(next);
     };
 
-    client.auth.getSession().then(({ data }) => {
-      if (cancelled) return;
-      void sync(data.session).finally(() => {
-        if (!cancelled) setReady(true);
+    const timeoutId = window.setTimeout(finishInit, AUTH_INIT_TIMEOUT_MS);
+
+    client.auth
+      .getSession()
+      .then(({ data }) => {
+        if (cancelled) return;
+        return sync(data.session);
+      })
+      .catch((err) => {
+        console.error("[auth] getSession failed", err);
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        finishInit();
       });
-    });
 
     const {
       data: { subscription },
@@ -151,6 +169,7 @@ export function PrototypeAuthProvider({
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, [mode]);

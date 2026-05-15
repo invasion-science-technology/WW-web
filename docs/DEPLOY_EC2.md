@@ -213,7 +213,7 @@ Then open:
 |--------|-----|
 | Deploy | Push/merge to `main` (automatic) or **Actions → Deploy to EC2 → Run workflow** |
 | Logs | EC2: `journalctl -u 'actions.runner.*' -f` |
-| Manual publish | On EC2 in repo: `STATIC_EXPORT=1 npm run build && ./scripts/ec2/publish-static.sh` |
+| Manual publish | `unset NEXT_PUBLIC_BASE_PATH && STATIC_EXPORT=1 npm run build && ./scripts/ec2/publish-static.sh` |
 
 ### GitHub Pages
 
@@ -230,6 +230,7 @@ Leave **`deploy.yml` as-is** — it is the canonical marketing deploy. Do not di
 | `npm run build` OOM | Upgrade to t3.small; add swap: `sudo fallocate -l 2G /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile` |
 | 404 on `/prototype` | Use trailing slash: `/prototype/` |
 | Auth fails | Re-check Supabase Site URL; secrets in GitHub; rebuild via Actions |
+| Stuck on **Loading…** | Page HTML references `/WW-web/_next/…` but files are `/_next/…` — rebuild EC2 **without** `NEXT_PUBLIC_BASE_PATH` (see below) |
 | certbot fails | DNS A record must point to Elastic IP; port 80 open |
 
 ### Replace runner
