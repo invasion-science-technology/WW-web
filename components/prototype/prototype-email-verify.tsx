@@ -4,7 +4,13 @@ import { useCallback, useState } from "react";
 
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
 
-export default function PrototypeEmailVerify({ email }: { email: string }) {
+export default function PrototypeEmailVerify({
+  email,
+  onBackToSignIn,
+}: {
+  email: string;
+  onBackToSignIn?: () => void;
+}) {
   const { resendVerificationEmail, signOut } = usePrototypeAuth();
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +65,15 @@ export default function PrototypeEmailVerify({ email }: { email: string }) {
         >
           {busy ? "Sending…" : "Resend verification email"}
         </button>
+        {onBackToSignIn ? (
+          <button
+            type="button"
+            onClick={onBackToSignIn}
+            className="mt-3 w-full rounded-xl border border-[var(--color-border)] px-4 py-3 text-sm font-medium text-[var(--color-text-secondary)] hover:border-[var(--color-accent-dim)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            Back to sign in
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => void signOut()}

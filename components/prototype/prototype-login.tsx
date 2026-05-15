@@ -77,7 +77,17 @@ export default function PrototypeLogin() {
   );
 
   if (awaitingVerificationEmail) {
-    return <PrototypeEmailVerify email={awaitingVerificationEmail} />;
+    return (
+      <PrototypeEmailVerify
+        email={awaitingVerificationEmail}
+        onBackToSignIn={() => {
+          setAwaitingVerificationEmail(null);
+          setTab("signin");
+          setError(null);
+          setInfo(null);
+        }}
+      />
+    );
   }
 
   return (
@@ -107,39 +117,44 @@ export default function PrototypeLogin() {
           )}
         </p>
 
-        {mode === "supabase" ? (
-          <div className="mt-5 flex rounded-xl border border-[var(--color-border)] p-1 bg-[var(--color-background)]">
-            <button
-              type="button"
-              onClick={() => {
-                setTab("signin");
-                setError(null);
-                setInfo(null);
-              }}
-              className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
-                tab === "signin"
-                  ? "bg-[var(--color-accent)] text-[#052e16]"
-                  : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              }`}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTab("signup");
-                setError(null);
-                setInfo(null);
-              }}
-              className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
-                tab === "signup"
-                  ? "bg-[var(--color-accent)] text-[#052e16]"
-                  : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              }`}
-            >
-              Sign up
-            </button>
-          </div>
+        <div className="mt-5 flex rounded-xl border border-[var(--color-border)] p-1 bg-[var(--color-background)]">
+          <button
+            type="button"
+            onClick={() => {
+              setTab("signin");
+              setError(null);
+              setInfo(null);
+            }}
+            className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
+              tab === "signin" || tab === "forgot"
+                ? "bg-[var(--color-accent)] text-[#052e16]"
+                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            }`}
+          >
+            Sign in
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTab("signup");
+              setError(null);
+              setInfo(null);
+            }}
+            className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${
+              tab === "signup"
+                ? "bg-[var(--color-accent)] text-[#052e16]"
+                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            }`}
+          >
+            Sign up
+          </button>
+        </div>
+
+        {mode === "demo" && tab === "signup" ? (
+          <p className="mt-4 text-sm text-amber-400/90 leading-relaxed">
+            Sign-up needs Supabase. Set <code className="text-xs">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+            <code className="text-xs">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> at build time, then redeploy.
+          </p>
         ) : null}
 
         <form className="mt-6 space-y-4" onSubmit={onSubmit}>
@@ -173,17 +188,47 @@ export default function PrototypeLogin() {
               We will email a link to set a new password. The link opens the Field lab reset page.
             </p>
           )}
-          {tab === "signin" && mode === "supabase" ? (
+          {tab === "signin" ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 -mt-2 text-sm">
+              {mode === "supabase" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTab("forgot");
+                    setError(null);
+                    setInfo(null);
+                  }}
+                  className="text-[var(--color-accent)] hover:underline"
+                >
+                  Forgot password?
+                </button>
+              ) : (
+                <span />
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("signup");
+                  setError(null);
+                  setInfo(null);
+                }}
+                className="text-[var(--color-accent)] hover:underline"
+              >
+                Create account
+              </button>
+            </div>
+          ) : null}
+          {tab === "forgot" ? (
             <button
               type="button"
               onClick={() => {
-                setTab("forgot");
+                setTab("signin");
                 setError(null);
                 setInfo(null);
               }}
               className="text-sm text-[var(--color-accent)] hover:underline -mt-2"
             >
-              Forgot password?
+              Back to sign in
             </button>
           ) : null}
           {tab === "signup" && mode === "supabase" ? (
@@ -212,7 +257,7 @@ export default function PrototypeLogin() {
           ) : null}
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || (mode === "demo" && tab === "signup")}
             className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-[#052e16] hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {busy

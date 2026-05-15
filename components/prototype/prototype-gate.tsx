@@ -13,7 +13,7 @@ export default function PrototypeGate({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const { gateState, session, supabaseSession } = usePrototypeAuth();
+  const { gateState, session, supabaseSession, signOut } = usePrototypeAuth();
 
   if (pathname?.startsWith("/prototype/reset-password")) {
     return <>{children}</>;
@@ -30,7 +30,12 @@ export default function PrototypeGate({
   if (gateState === "signed_out") return <PrototypeLogin />;
   if (gateState === "email_unverified") {
     const email = supabaseSession?.user?.email ?? session?.email ?? "";
-    return <PrototypeEmailVerify email={email} />;
+    return (
+      <PrototypeEmailVerify
+        email={email}
+        onBackToSignIn={() => void signOut()}
+      />
+    );
   }
   if (gateState === "pending") return <PrototypePending variant="pending" />;
   if (gateState === "rejected") return <PrototypePending variant="rejected" />;
