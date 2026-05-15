@@ -18,6 +18,11 @@ import {
   patchDrawForMapLibre,
   tagMapLibreCanvas,
 } from "@/lib/prototype/mapbox-draw-maplibre";
+import {
+  drawnPolygonCollection,
+  formatPolygonArea,
+  type AreaDisplay,
+} from "@/lib/prototype/geo";
 import { SATELLITE_MAP_STYLE } from "@/lib/prototype/satellite-style";
 
 import type MapboxDraw from "@mapbox/mapbox-gl-draw";
@@ -81,9 +86,12 @@ export default function FieldMap({
   const teardownRef = useRef<(() => void) | null>(null);
   const [drawReady, setDrawReady] = useState(false);
   const [drawMode, setDrawMode] = useState<string>("simple_select");
+  const [areaDisplay, setAreaDisplay] = useState<AreaDisplay | null>(null);
 
   const handleDraw = useCallback(
     (collection: FeatureCollection | null) => {
+      const poly = drawnPolygonCollection(collection);
+      setAreaDisplay(formatPolygonArea(poly));
       onDrawChange(collection);
     },
     [onDrawChange],
@@ -153,6 +161,7 @@ export default function FieldMap({
     draw.deleteAll();
     draw.changeMode("simple_select");
     setDrawMode("simple_select");
+    setAreaDisplay(null);
     onDrawChange(null);
   }, [onDrawChange]);
 
@@ -206,6 +215,14 @@ export default function FieldMap({
         {drawMode === "draw_polygon" ? (
           <span className="text-xs text-[var(--color-accent)]">
             Click on the map to place corners · click first point again to finish
+          </span>
+        ) : null}
+        {areaDisplay ? (
+          <span className="text-xs font-mono text-[var(--color-text-primary)] bg-[var(--color-background)] border border-[var(--color-border)] rounded-lg px-3 py-2">
+            <span className="text-[var(--color-text-secondary)]">Area </span>
+            {areaDisplay.m2Label}
+            <span className="text-[var(--color-text-secondary)]"> · </span>
+            {areaDisplay.acresLabel}
           </span>
         ) : null}
       </div>

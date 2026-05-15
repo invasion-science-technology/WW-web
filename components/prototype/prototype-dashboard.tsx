@@ -12,7 +12,12 @@ import {
 } from "@/components/prototype/agronomy-charts";
 import { demoStats, demoWeedGeoJson } from "@/lib/prototype/demo-weed";
 import { cumulativeGddSeries, formatISODateLocal } from "@/lib/prototype/gdd";
-import { centroidInCalifornia, drawnPolygonCollection, polygonCentroid } from "@/lib/prototype/geo";
+import {
+  centroidInCalifornia,
+  drawnPolygonCollection,
+  formatPolygonArea,
+  polygonCentroid,
+} from "@/lib/prototype/geo";
 import { fetchArchiveDaily, fetchForecastDaily } from "@/lib/prototype/meteo";
 
 const FieldMap = dynamic(() => import("@/components/prototype/field-map"), {
@@ -82,6 +87,11 @@ export default function PrototypeDashboard() {
     const c = polygonCentroid(fieldPolygon.coordinates as [number, number][][]);
     return { lat: c[1], lon: c[0] };
   }, [fieldPolygon]);
+
+  const fieldArea = useMemo(
+    () => formatPolygonArea(fieldPolygon),
+    [fieldPolygon],
+  );
 
   useEffect(() => {
     if (!centroid) {
@@ -292,6 +302,17 @@ export default function PrototypeDashboard() {
         <div className="space-y-6">
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">AOI summary</h2>
+            {fieldArea ? (
+              <p className="text-sm text-[var(--color-text-primary)]">
+                <span className="font-semibold">{fieldArea.m2Label}</span>
+                <span className="text-[var(--color-text-secondary)]"> · </span>
+                <span className="font-semibold">{fieldArea.acresLabel}</span>
+              </p>
+            ) : (
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                Close the polygon to see area (m² and acres).
+              </p>
+            )}
             {centroid ? (
               <p className="text-xs font-mono text-[var(--color-accent)] leading-relaxed">
                 Centroid {centroid.lat.toFixed(5)}°, {centroid.lon.toFixed(5)}°

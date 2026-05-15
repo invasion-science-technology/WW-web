@@ -1,5 +1,9 @@
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 
+/** WGS84 mean Earth radius (m) — matches common geodesic area helpers */
+const EARTH_RADIUS_M = 6378137;
+const M2_PER_ACRE = 4046.8564224;
+
 export type LonLat = [number, number];
 
 export function polygonCentroid(coords: LonLat[][]): LonLat {
@@ -32,6 +36,57 @@ export function drawnPolygonCollection(
   const poly = fc?.features?.find((f) => f.geometry?.type === "Polygon");
   if (!poly) return null;
   return featurePolygon(poly);
+}
+
+/** Geodesic area on WGS84 (m²). Returns null if ring is not closed / too few vertices. */
+export function polygonAreaSquareMeters(poly: Polygon): number | null {
+  const ring = poly.coordinates[0] as LonLat[] | undefined;
+  if (!ring || ring.length < 4) return null;
+
+  let sum = 0;
+  const n = ring.length - 1;
+  if (n < 3) return null;
+
+  for (let i = 0; i < n; i++) {
+    const [lon1, lat1] = ring[i];
+    const [lon2, lat2] = ring[(i + 1) % n];
+    const φ1 = (lat1 * Math.PI) / 180;
+    const φ2 = (lat2 * Math.PI) / 180;
+    const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+    sum += Δλ * (2 + Math.sin(φ1) + Math.sin(φ2));
+  }
+
+  const m2 = Math.abs((sum * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2);
+  return Number.isFinite(m2) && m2 > 0 ? m2 : null;
+}
+
+export function squareMetersToAcres(m2: number): number {
+  return m2 / M2_PER_ACRE;
+}
+
+export type AreaDisplay = {
+  squareMeters: number;
+  acres: number;
+  m2Label: string;
+  acresLabel: string;
+};
+
+export function formatPolygonArea(poly: Polygon | null): AreaDisplay | null {
+  const m2 = poly ? polygonAreaSquareMeters(poly) : null;
+  if (m2 == null) return null;
+
+  const acres = squareMetersToAcres(m2);
+  const m2Label =
+    m2 >= 1_000_000
+      ? `${(m2 / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} km²`
+      : `${Math.round(m2).toLocaleString()} m²`;
+
+  const acresLabel =
+    acres >= 10
+      ? `${acres.toLocaleString(undefined, { maximumFractionDigits: 1 })} acres`
+      : `${acres.toLocaleString(undefined, { maximumFractionDigits: 2 })} acres`;
+
+  return { squareMeters: m2, acres, m2Label, acresLabel };
 }
 
 /** Rough bounding box for California (WGS84). Used to constrain the prototype sandbox. */
