@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 
@@ -32,12 +31,6 @@ export default function Nav() {
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <Link
-            href="/prototype"
-            className="text-sm text-[#8aab8a] hover:text-[#86efac] transition-colors hidden sm:inline"
-          >
-            Field lab
-          </Link>
           <a
             href="mailto:hello@weedwatch.ai"
             className="text-sm font-medium px-4 py-2 rounded-full border border-[#86efac]/40 text-[#86efac] hover:bg-[#86efac]/10 transition-colors duration-200"
