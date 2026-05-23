@@ -11,18 +11,38 @@ import {
   YAxis,
 } from "recharts";
 
+export type MultiSeriesPoint = {
+  date: string;
+  [seriesKey: string]: number | string | null;
+};
+
+export type ChartSeries = {
+  key: string;
+  name: string;
+  color: string;
+};
+
 export function WeatherForecastChart({
   data,
+  series,
 }: {
-  data: { date: string; tmax: number | null; tmin: number | null }[];
+  data: MultiSeriesPoint[];
+  series?: ChartSeries[];
 }) {
   if (!data.length) {
     return (
       <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
-        Draw a field polygon to load Open-Meteo forecast at the centroid.
+        Save fields with acquisition windows to load Open-Meteo temperatures.
       </p>
     );
   }
+
+  const lines = series?.length
+    ? series
+    : [
+        { key: "tmax", name: "Daily max", color: "#86efac" },
+        { key: "tmin", name: "Daily min", color: "#4ade80" },
+      ];
 
   return (
     <div className="h-56 w-full pt-2">
@@ -41,22 +61,42 @@ export function WeatherForecastChart({
             labelStyle={{ color: "#f0faf0" }}
           />
           <Legend wrapperStyle={{ fontSize: 11 }} />
-          <Line type="monotone" dataKey="tmax" name="Daily max" stroke="#86efac" dot={false} strokeWidth={2} />
-          <Line type="monotone" dataKey="tmin" name="Daily min" stroke="#4ade80" dot={false} strokeWidth={2} />
+          {lines.map((line) => (
+            <Line
+              key={line.key}
+              type="monotone"
+              dataKey={line.key}
+              name={line.name}
+              stroke={line.color}
+              dot={false}
+              strokeWidth={2}
+              connectNulls
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-export function GddChart({ data }: { data: { date: string; cumulative: number }[] }) {
+export function GddChart({
+  data,
+  series,
+}: {
+  data: MultiSeriesPoint[];
+  series?: ChartSeries[];
+}) {
   if (!data.length) {
     return (
       <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
-        Set planting date and base temperature to compute GDD from Open-Meteo archive (daily highs/lows).
+        Save fields with acquisition windows to compute GDD from Open-Meteo daily highs/lows.
       </p>
     );
   }
+
+  const lines = series?.length
+    ? series
+    : [{ key: "cumulative", name: "GDD (°C·d)", color: "#fbbf24" }];
 
   return (
     <div className="h-56 w-full pt-2">
@@ -73,7 +113,19 @@ export function GddChart({ data }: { data: { date: string; cumulative: number }[
               fontSize: 12,
             }}
           />
-          <Line type="monotone" dataKey="cumulative" name="GDD (°C·d)" stroke="#fbbf24" dot={false} strokeWidth={2} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          {lines.map((line) => (
+            <Line
+              key={line.key}
+              type="monotone"
+              dataKey={line.key}
+              name={line.name}
+              stroke={line.color}
+              dot={false}
+              strokeWidth={2}
+              connectNulls
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>

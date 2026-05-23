@@ -36,23 +36,79 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 
 Remove or leave unset `NEXT_PUBLIC_PROTO_EMAIL` / `NEXT_PUBLIC_PROTO_PASSWORD` — when Supabase env vars are set, **demo login is disabled**.
 
-## 5. Approve sign-ups
+## 5. Notify admins when approval is pending
+
+The static app cannot safely send admin emails from the browser. Use the Supabase Edge Function in
+[`supabase/functions/notify-pending-approval`](../supabase/functions/notify-pending-approval) and trigger it from a
+Supabase Database Webhook whenever a profile is inserted with `status = 'pending'`.
+
+This function uses [Resend](https://resend.com/) to send email.
+
+### Deploy the function
+
+Install/login to the Supabase CLI, then from the repo root:
+
+```bash
+supabase functions deploy notify-pending-approval --no-verify-jwt
+```
+
+Set function secrets:
+
+```bash
+supabase secrets set RESEND_API_KEY=re_...
+supabase secrets set APPROVAL_NOTIFY_TO=you@example.com
+supabase secrets set APPROVAL_NOTIFY_FROM="WeedWatch <alerts@your-domain.com>"
+supabase secrets set APPROVAL_ADMIN_URL="https://your-host/prototype/admin/"
+supabase secrets set WEBHOOK_SECRET="replace-with-a-long-random-string"
+```
+
+Notes:
+
+- `APPROVAL_NOTIFY_TO` can be a comma-separated list.
+- `APPROVAL_NOTIFY_FROM` must be a sender verified in Resend. Resend's sandbox sender only works for limited testing.
+- `WEBHOOK_SECRET` is required because the function is deployed with `--no-verify-jwt` so Supabase webhooks can call it.
+
+### Create the Database Webhook
+
+In Supabase Dashboard:
+
+1. **Database → Webhooks → Create a new hook**
+2. Table: `public.profiles`
+3. Events: `Insert`
+4. Type: `HTTP Request`
+5. Method: `POST`
+6. URL:
+   `https://<project-ref>.functions.supabase.co/notify-pending-approval`
+7. Headers:
+   - `x-webhook-secret: <same WEBHOOK_SECRET value>`
+   - `content-type: application/json`
+8. Optional condition/filter: `status = 'pending'`
+
+The function also checks the payload and skips anything that is not an inserted pending profile.
+
+## 6. Approve sign-ups
 
 Open **Field lab → Admin** (`/prototype/admin/`) while signed in as an admin. Pending users can be **Approved** or **Rejected**.
 
-## 6. Profile (name & organization)
+## 7. Profile (name & organization)
 
-Approved users can open **Field lab → Profile** (`/prototype/profile/`) to set display name and organization.
+Pending and approved users can open **Field lab → Profile** (`/prototype/profile/`) to set display name and organization.
 
 On an **existing** Supabase project, run [`supabase/migrations/20250515_epic_0_1_profile.sql`](../supabase/migrations/20250515_epic_0_1_profile.sql) in the SQL Editor.
 
-## 7. Email verification
+## 8. Saved fields
+
+Approved users can draw field polygons, name them, assign a crop (`corn`, `cotton`, `soybean`, or `other`), set a satellite acquisition time window, and save them permanently to their account.
+
+On an **existing** Supabase project, run [`supabase/migrations/20260522_user_fields.sql`](../supabase/migrations/20260522_user_fields.sql) in the SQL Editor. New projects that run [`supabase/schema.sql`](../supabase/schema.sql) already include the `user_fields` table and RLS policies.
+
+## 9. Email verification
 
 1. **Authentication → Providers → Email** — enable **Confirm email** if you require verification before sign-in.
 2. After sign-up, users see **Check your inbox** with **Resend verification email**.
 3. Add your app URLs under **Redirect URLs** (same as Site URL / `/**`).
 
-## 8. Password reset
+## 10. Password reset
 
 1. **Authentication → URL configuration** — ensure redirect URLs include your reset page, e.g.  
    `http://54.177.153.205/prototype/reset-password/**`  
@@ -65,4 +121,12 @@ Optional: **Authentication → Email Templates** → customize the reset message
 
 ## Demo mode (no Supabase)
 
-If Supabase env vars are missing, the app falls back to a single shared demo account (`NEXT_PUBLIC_PROTO_EMAIL` / `NEXT_PUBLIC_PROTO_PASSWORD` in `.env.example`).
+Demo mode is local opt-in only:
+
+```env
+NEXT_PUBLIC_PROTO_DEMO_MODE=1
+NEXT_PUBLIC_PROTO_EMAIL=demo@weedwatch.local
+NEXT_PUBLIC_PROTO_PASSWORD=weedwatch
+```
+
+Do not set `NEXT_PUBLIC_PROTO_DEMO_MODE` on EC2 or production builds.

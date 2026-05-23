@@ -9,7 +9,10 @@ import {
   GddChart,
   NdviDemoChart,
   WeatherForecastChart,
+  type ChartSeries,
+  type MultiSeriesPoint,
 } from "@/components/prototype/agronomy-charts";
+import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
 import { demoStats, demoWeedGeoJson } from "@/lib/prototype/demo-weed";
 import { cumulativeGddSeries, formatISODateLocal } from "@/lib/prototype/gdd";
 import {
@@ -19,7 +22,15 @@ import {
   listDrawnPolygons,
   polygonsInCalifornia,
 } from "@/lib/prototype/geo";
-import { fetchArchiveDaily, fetchForecastDaily } from "@/lib/prototype/meteo";
+import { fetchMeteoDailyRange } from "@/lib/prototype/meteo";
+import {
+  createUserField,
+  deleteUserField,
+  fetchUserFields,
+  getSupabaseClient,
+  updateUserField,
+} from "@/lib/supabase/client";
+import type { CropCategory, UserField } from "@/lib/supabase/types";
 
 const FieldMap = dynamic(() => import("@/components/prototype/field-map"), {
   ssr: false,
@@ -48,20 +59,79 @@ function mockOrderId(): string {
   return `WW-${Date.now().toString(36).toUpperCase()}`;
 }
 
-const defaultPlantingDate = () => {
-  const now = new Date();
-  const planting = new Date(now.getFullYear(), 2, 15);
-  if (now < planting) {
-    planting.setFullYear(planting.getFullYear() - 1);
-  }
-  return formatISODateLocal(planting);
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+const defaultAcquisitionWindow = () => {
+  const start = new Date();
+  return {
+    start: formatISODateLocal(start),
+    end: formatISODateLocal(addDays(start, 14)),
+  };
 };
 
 const METEO_DEBOUNCE_MS = 400;
 const GDD_BASE_MIN = -10;
 const GDD_BASE_MAX = 35;
+const FIELD_SERIES_COLORS = [
+  "#86efac",
+  "#38bdf8",
+  "#fbbf24",
+  "#f472b6",
+  "#a78bfa",
+  "#fb7185",
+  "#2dd4bf",
+  "#f97316",
+];
+
+const CROP_OPTIONS: { value: CropCategory; label: string }[] = [
+  { value: "corn", label: "Corn" },
+  { value: "cotton", label: "Cotton" },
+  { value: "soybean", label: "Soybean" },
+  { value: "other", label: "Other" },
+];
+
+function cropLabel(crop: CropCategory): string {
+  return CROP_OPTIONS.find((option) => option.value === crop)?.label ?? crop;
+}
+
+function isFeatureCollection(value: unknown): value is FeatureCollection {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "FeatureCollection" &&
+    Array.isArray((value as { features?: unknown }).features)
+  );
+}
+
+function seriesKey(field: UserField): string {
+  return `field_${field.id.replaceAll("-", "_")}`;
+}
+
+function mergeSeriesByDate(
+  series: { key: string; points: { date: string; value: number | null }[] }[],
+): MultiSeriesPoint[] {
+  const rows = new Map<string, MultiSeriesPoint>();
+
+  for (const item of series) {
+    for (const point of item.points) {
+      const row = rows.get(point.date) ?? { date: point.date };
+      row[item.key] = point.value;
+      rows.set(point.date, row);
+    }
+  }
+
+  return Array.from(rows.values()).sort((a, b) =>
+    String(a.date).localeCompare(String(b.date)),
+  );
+}
 
 export default function PrototypeDashboard() {
+  const { mode, supabaseSession } = usePrototypeAuth();
+  const userId = supabaseSession?.user?.id ?? null;
   const [drawn, setDrawn] = useState<FeatureCollection | null>(null);
   const [weedOverlay, setWeedOverlay] = useState<FeatureCollection | null>(null);
   const [jobRunning, setJobRunning] = useState(false);
@@ -73,18 +143,29 @@ export default function PrototypeDashboard() {
   );
 
   const [forecastRows, setForecastRows] = useState<
-    { date: string; tmax: number | null; tmin: number | null }[]
+    MultiSeriesPoint[]
   >([]);
-  const [gddRows, setGddRows] = useState<{ date: string; cumulative: number }[]>([]);
+  const [weatherSeries, setWeatherSeries] = useState<ChartSeries[]>([]);
+  const [gddRows, setGddRows] = useState<MultiSeriesPoint[]>([]);
+  const [gddSeries, setGddSeries] = useState<ChartSeries[]>([]);
   const [meteoNote, setMeteoNote] = useState<string | null>(null);
   const [gddNote, setGddNote] = useState<string | null>(null);
-  const [debouncedCentroid, setDebouncedCentroid] = useState<{
-    lat: number;
-    lon: number;
-  } | null>(null);
 
-  const [plantingDate, setPlantingDate] = useState(defaultPlantingDate);
   const [baseTempC, setBaseTempC] = useState(10);
+  const [fieldName, setFieldName] = useState("");
+  const [fieldCrop, setFieldCrop] = useState<CropCategory>("corn");
+  const [acquisitionStartDate, setAcquisitionStartDate] = useState(
+    () => defaultAcquisitionWindow().start,
+  );
+  const [acquisitionEndDate, setAcquisitionEndDate] = useState(
+    () => defaultAcquisitionWindow().end,
+  );
+  const [savedFields, setSavedFields] = useState<UserField[]>([]);
+  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
+  const [fieldsLoading, setFieldsLoading] = useState(false);
+  const [fieldSaving, setFieldSaving] = useState(false);
+  const [fieldMessage, setFieldMessage] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
   const ndviDemo = useMemo(() => buildNdviDemoSeries(90), []);
 
@@ -104,97 +185,296 @@ export default function PrototypeDashboard() {
   }, [drawn]);
 
   const fieldArea = useMemo(() => formatCollectionArea(drawn), [drawn]);
+  const selectedField = useMemo(
+    () => savedFields.find((field) => field.id === selectedFieldId) ?? null,
+    [savedFields, selectedFieldId],
+  );
+  const canPersistFields = mode === "supabase" && Boolean(userId);
+  const acquisitionWindowLabel = useMemo(() => {
+    if (acquisitionStartDate && acquisitionEndDate) {
+      return `${acquisitionStartDate} to ${acquisitionEndDate}`;
+    }
+    if (acquisitionStartDate) return `starting ${acquisitionStartDate}`;
+    if (acquisitionEndDate) return `ending ${acquisitionEndDate}`;
+    return "not set";
+  }, [acquisitionStartDate, acquisitionEndDate]);
 
   const effectiveBaseTempC = Number.isFinite(baseTempC)
     ? Math.min(GDD_BASE_MAX, Math.max(GDD_BASE_MIN, baseTempC))
     : 10;
 
-  useEffect(() => {
-    if (!centroid) {
-      queueMicrotask(() => setDebouncedCentroid(null));
+  const refreshSavedFields = useCallback(async () => {
+    if (!userId) {
+      setSavedFields([]);
       return;
     }
+
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    setFieldsLoading(true);
+    setFieldError(null);
+    const { fields, error } = await fetchUserFields(client, userId);
+    setFieldsLoading(false);
+    if (error) {
+      setFieldError(error);
+      return;
+    }
+    setSavedFields(fields);
+  }, [userId]);
+
+  useEffect(() => {
+    void refreshSavedFields();
+  }, [refreshSavedFields]);
+
+  const handleDrawChange = useCallback((collection: FeatureCollection | null) => {
+    setDrawn(collection);
+    setWeedOverlay(null);
+    setStats(null);
+    setJobStep(0);
+    setOrderId(null);
+    setJobError(null);
+  }, []);
+
+  const startNewField = useCallback(() => {
+    const window = defaultAcquisitionWindow();
+    setSelectedFieldId(null);
+    setFieldName("");
+    setFieldCrop("corn");
+    setAcquisitionStartDate(window.start);
+    setAcquisitionEndDate(window.end);
+    setDrawn(null);
+    setWeedOverlay(null);
+    setStats(null);
+    setJobStep(0);
+    setOrderId(null);
+    setFieldMessage(null);
+    setFieldError(null);
+  }, []);
+
+  const loadSavedField = useCallback((field: UserField) => {
+    if (!isFeatureCollection(field.geometry)) {
+      setFieldError("Saved field geometry is invalid.");
+      return;
+    }
+
+    setSelectedFieldId(field.id);
+    setFieldName(field.name);
+    setFieldCrop(field.crop);
+    setAcquisitionStartDate(field.acquisition_start_date ?? "");
+    setAcquisitionEndDate(field.acquisition_end_date ?? "");
+    setDrawn(field.geometry);
+    setWeedOverlay(null);
+    setStats(null);
+    setJobStep(0);
+    setOrderId(null);
+    setFieldMessage(`Loaded ${field.name}.`);
+    setFieldError(null);
+  }, []);
+
+  const saveCurrentField = useCallback(async () => {
+    setFieldMessage(null);
+    setFieldError(null);
+
+    if (!canPersistFields || !userId) {
+      setFieldError("Field saving requires a signed-in Supabase user.");
+      return;
+    }
+    if (!drawn || !fieldPolygons.length || !fieldArea) {
+      setFieldError("Draw and close a field polygon before saving.");
+      return;
+    }
+    if (!polygonsInCalifornia(fieldPolygons)) {
+      setFieldError("Every polygon vertex must lie inside California before saving.");
+      return;
+    }
+
+    const name = fieldName.trim();
+    if (!name) {
+      setFieldError("Give the field a name before saving.");
+      return;
+    }
+    if (
+      acquisitionStartDate &&
+      acquisitionEndDate &&
+      acquisitionEndDate < acquisitionStartDate
+    ) {
+      setFieldError("Acquisition end date must be on or after the start date.");
+      return;
+    }
+
+    const client = getSupabaseClient();
+    if (!client) {
+      setFieldError("Supabase is not configured.");
+      return;
+    }
+
+    setFieldSaving(true);
+    const payload = {
+      name,
+      crop: fieldCrop,
+      geometry: drawn,
+      acquisition_start_date: acquisitionStartDate || null,
+      acquisition_end_date: acquisitionEndDate || null,
+      area_m2: fieldArea.squareMeters,
+      area_acres: fieldArea.acres,
+    };
+    const result = selectedFieldId
+      ? await updateUserField(client, userId, selectedFieldId, payload)
+      : await createUserField(client, userId, payload);
+    setFieldSaving(false);
+
+    if (result.error || !result.field) {
+      setFieldError(result.error ?? "Could not save field.");
+      return;
+    }
+
+    setSelectedFieldId(result.field.id);
+    setFieldName(result.field.name);
+    setFieldCrop(result.field.crop);
+    setAcquisitionStartDate(result.field.acquisition_start_date ?? "");
+    setAcquisitionEndDate(result.field.acquisition_end_date ?? "");
+    setFieldMessage(selectedFieldId ? "Field updated." : "Field saved.");
+    await refreshSavedFields();
+  }, [
+    canPersistFields,
+    userId,
+    drawn,
+    fieldPolygons,
+    fieldArea,
+    fieldName,
+    fieldCrop,
+    acquisitionStartDate,
+    acquisitionEndDate,
+    selectedFieldId,
+    refreshSavedFields,
+  ]);
+
+  const removeSavedField = useCallback(
+    async (field: UserField) => {
+      if (!userId) return;
+      const client = getSupabaseClient();
+      if (!client) return;
+
+      setFieldError(null);
+      setFieldMessage(null);
+      const { ok, error } = await deleteUserField(client, userId, field.id);
+      if (!ok) {
+        setFieldError(error ?? "Could not delete field.");
+        return;
+      }
+
+      if (selectedFieldId === field.id) {
+        startNewField();
+      }
+      setFieldMessage(`Deleted ${field.name}.`);
+      await refreshSavedFields();
+    },
+    [userId, selectedFieldId, refreshSavedFields, startNewField],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
     const handle = window.setTimeout(() => {
-      setDebouncedCentroid(centroid);
-    }, METEO_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [centroid]);
-
-  useEffect(() => {
-    if (!debouncedCentroid) {
-      queueMicrotask(() => {
-        setForecastRows([]);
-        setMeteoNote(null);
-      });
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const daily = await fetchForecastDaily(
-          debouncedCentroid.lat,
-          debouncedCentroid.lon,
-          14,
+      (async () => {
+        const validFields = savedFields.filter(
+          (field) =>
+            isFeatureCollection(field.geometry) &&
+            field.acquisition_start_date &&
+            field.acquisition_end_date,
         );
-        const rows = daily.dates.map((date, i) => ({
-          date: date.slice(5),
-          tmax: daily.tmax[i] ?? null,
-          tmin: daily.tmin[i] ?? null,
-        }));
-        if (!cancelled) {
-          setForecastRows(rows);
-          setMeteoNote(null);
-        }
-      } catch (e) {
-        if (!cancelled) {
+
+        if (!validFields.length) {
           setForecastRows([]);
-          setMeteoNote(e instanceof Error ? e.message : "Forecast request failed");
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedCentroid]);
-
-  useEffect(() => {
-    if (!debouncedCentroid) {
-      queueMicrotask(() => {
-        setGddRows([]);
-        setGddNote(null);
-      });
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const end = formatISODateLocal(new Date());
-        const archive = await fetchArchiveDaily(
-          debouncedCentroid.lat,
-          debouncedCentroid.lon,
-          plantingDate,
-          end,
-        );
-        const series = cumulativeGddSeries(archive, effectiveBaseTempC);
-        if (!cancelled) {
-          setGddRows(series.map((p) => ({ date: p.date.slice(5), cumulative: p.cumulative })));
-          setGddNote(null);
-        }
-      } catch (e) {
-        if (!cancelled) {
+          setWeatherSeries([]);
           setGddRows([]);
-          setGddNote(e instanceof Error ? e.message : "GDD archive request failed");
+          setGddSeries([]);
+          setMeteoNote(null);
+          setGddNote(null);
+          return;
         }
-      }
-    })();
+
+        const weatherData: {
+          key: string;
+          points: { date: string; value: number | null }[];
+        }[] = [];
+        const gddData: {
+          key: string;
+          points: { date: string; value: number | null }[];
+        }[] = [];
+        const chartSeries: ChartSeries[] = [];
+        const errors: string[] = [];
+
+        await Promise.all(
+          validFields.map(async (field, index) => {
+            const geometry = field.geometry as FeatureCollection;
+            const center = collectionCentroid(geometry);
+            if (!center || !field.acquisition_start_date || !field.acquisition_end_date) {
+              return;
+            }
+
+            const key = seriesKey(field);
+            chartSeries.push({
+              key,
+              name: field.name,
+              color: FIELD_SERIES_COLORS[index % FIELD_SERIES_COLORS.length],
+            });
+
+            try {
+              const daily = await fetchMeteoDailyRange(
+                center[1],
+                center[0],
+                field.acquisition_start_date,
+                field.acquisition_end_date,
+              );
+
+              weatherData.push({
+                key,
+                points: daily.dates.map((date, i) => {
+                  const mean =
+                    daily.tmean[i] ??
+                    (daily.tmax[i] != null && daily.tmin[i] != null
+                      ? (daily.tmax[i] + daily.tmin[i]) / 2
+                      : null);
+                  return {
+                    date,
+                    value: mean == null ? null : Math.round(mean * 10) / 10,
+                  };
+                }),
+              });
+
+              gddData.push({
+                key,
+                points: cumulativeGddSeries(daily, effectiveBaseTempC).map((point) => ({
+                  date: point.date,
+                  value: Math.round(point.cumulative * 10) / 10,
+                })),
+              });
+            } catch (e) {
+              errors.push(
+                `${field.name}: ${e instanceof Error ? e.message : "Open-Meteo request failed"}`,
+              );
+            }
+          }),
+        );
+
+        if (cancelled) return;
+
+        setWeatherSeries(chartSeries);
+        setForecastRows(mergeSeriesByDate(weatherData));
+        setGddSeries(chartSeries);
+        setGddRows(mergeSeriesByDate(gddData));
+        const note = errors.length ? errors.join(" · ") : null;
+        setMeteoNote(note);
+        setGddNote(note);
+      })();
+    }, METEO_DEBOUNCE_MS);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(handle);
     };
-  }, [debouncedCentroid, plantingDate, effectiveBaseTempC]);
+  }, [savedFields, effectiveBaseTempC]);
 
   useEffect(() => {
     return () => {
@@ -262,7 +542,7 @@ export default function PrototypeDashboard() {
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          <FieldMap weedOverlay={weedOverlay} onDrawChange={setDrawn} />
+          <FieldMap drawn={drawn} weedOverlay={weedOverlay} onDrawChange={handleDrawChange} />
           <p className="text-xs text-[var(--color-text-secondary)]">
             Satellite imagery (Esri). Click <strong className="text-[var(--color-text-primary)]">Draw polygon</strong>{" "}
             above the map, then click corners on the map and click the first point again to close. Use{" "}
@@ -293,6 +573,9 @@ export default function PrototypeDashboard() {
                       Mock orderId <span className="text-[var(--color-text-primary)]">{orderId}</span>
                     </p>
                   ) : null}
+                  <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                    Acquisition window: {acquisitionWindowLabel}
+                  </p>
                 </div>
                 <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-secondary)]">
                   {jobRunning ? "In progress" : jobStep >= TASKING_PIPELINE_STEPS.length ? "Complete" : ""}
@@ -344,6 +627,172 @@ export default function PrototypeDashboard() {
         </div>
 
         <div className="space-y-6">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Saved fields</h2>
+                <p className="mt-1 text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                  Name the current polygon, choose a crop and acquisition window, then save it to your account.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={startNewField}
+                className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+              >
+                New
+              </button>
+            </div>
+
+            {!canPersistFields ? (
+              <p className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                Field saving requires Supabase sign-in. Demo mode can draw fields but does not persist them.
+              </p>
+            ) : null}
+
+            <div className="space-y-3">
+              <label className="block text-xs text-[var(--color-text-secondary)]">
+                Field name
+                <input
+                  type="text"
+                  value={fieldName}
+                  onChange={(e) => setFieldName(e.target.value)}
+                  maxLength={120}
+                  placeholder="North block"
+                  className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                />
+              </label>
+              <label className="block text-xs text-[var(--color-text-secondary)]">
+                Crop
+                <select
+                  value={fieldCrop}
+                  onChange={(e) => setFieldCrop(e.target.value as CropCategory)}
+                  className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                >
+                  {CROP_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-xs text-[var(--color-text-secondary)]">
+                  Acquisition start
+                  <input
+                    type="date"
+                    value={acquisitionStartDate}
+                    onChange={(e) => setAcquisitionStartDate(e.target.value)}
+                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                  />
+                </label>
+                <label className="block text-xs text-[var(--color-text-secondary)]">
+                  Acquisition end
+                  <input
+                    type="date"
+                    value={acquisitionEndDate}
+                    min={acquisitionStartDate || undefined}
+                    onChange={(e) => setAcquisitionEndDate(e.target.value)}
+                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                  />
+                </label>
+              </div>
+              <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
+                The saved window is used as the requested satellite acquisition period for this field.
+              </p>
+              <button
+                type="button"
+                onClick={() => void saveCurrentField()}
+                disabled={!canPersistFields || !fieldPolygons.length || fieldSaving}
+                className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-3 text-sm font-semibold text-[#052e16] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {fieldSaving
+                  ? "Saving…"
+                  : selectedField
+                    ? "Update saved field"
+                    : "Save field"}
+              </button>
+              {fieldMessage ? (
+                <p className="text-xs text-[var(--color-accent)]">{fieldMessage}</p>
+              ) : null}
+              {fieldError ? <p className="text-xs text-red-400">{fieldError}</p> : null}
+            </div>
+
+            <div className="border-t border-[var(--color-border)] pt-4 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+                  {fieldsLoading ? "Loading fields…" : `${savedFields.length} saved field${savedFields.length === 1 ? "" : "s"}`}
+                </p>
+                {canPersistFields ? (
+                  <button
+                    type="button"
+                    onClick={() => void refreshSavedFields()}
+                    className="text-xs text-[var(--color-accent)] hover:underline"
+                  >
+                    Refresh
+                  </button>
+                ) : null}
+              </div>
+              {savedFields.length ? (
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                  {savedFields.map((field) => (
+                    <div
+                      key={field.id}
+                      className={`rounded-xl border p-3 space-y-2 ${
+                        field.id === selectedFieldId
+                          ? "border-[var(--color-accent-dim)] bg-[var(--color-accent)]/5"
+                          : "border-[var(--color-border)] bg-[var(--color-background)]"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">
+                            {field.name}
+                          </p>
+                          <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+                            {cropLabel(field.crop)}
+                            {field.area_acres != null
+                              ? ` · ${field.area_acres.toLocaleString(undefined, { maximumFractionDigits: 2 })} acres`
+                              : ""}
+                          </p>
+                          <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+                            Acquisition{" "}
+                            {field.acquisition_start_date || field.acquisition_end_date
+                              ? `${field.acquisition_start_date ?? "…"} to ${field.acquisition_end_date ?? "…"}`
+                              : "not set"}
+                          </p>
+                        </div>
+                        <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-secondary)]">
+                          {field.id === selectedFieldId ? "Loaded" : ""}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => loadSavedField(field)}
+                          className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                        >
+                          Load
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removeSavedField(field)}
+                          className="rounded-lg border border-red-400/30 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-400/10"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  Draw a polygon and save it to build your field list.
+                </p>
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">AOI summary</h2>
             {fieldArea ? (
@@ -364,6 +813,9 @@ export default function PrototypeDashboard() {
             ) : (
               <p className="text-xs text-[var(--color-text-secondary)]">Draw a polygon to set the tasking centroid.</p>
             )}
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Acquisition window: <span className="text-[var(--color-text-primary)]">{acquisitionWindowLabel}</span>
+            </p>
             <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
               Production would POST GeoJSON to <code className="text-[var(--color-accent)]">order.api.oneatlas.airbus.com</code> after
               OAuth token exchange; this UI only simulates states for UX review.
@@ -371,29 +823,16 @@ export default function PrototypeDashboard() {
           </div>
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Open-Meteo · centroid</h2>
-            {centroid ? (
-              <p className="text-xs font-mono text-[var(--color-accent)]">
-                {centroid.lat.toFixed(4)}°, {centroid.lon.toFixed(4)}°
-              </p>
-            ) : (
-              <p className="text-xs text-[var(--color-text-secondary)]">Draw a polygon to compute centroid.</p>
-            )}
+            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Open-Meteo · saved fields</h2>
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+              Mean daily temperature at each saved field centroid, using that field&apos;s acquisition window.
+            </p>
             {meteoNote ? <p className="text-xs text-amber-400">{meteoNote}</p> : null}
-            <WeatherForecastChart data={forecastRows} />
+            <WeatherForecastChart data={forecastRows} series={weatherSeries} />
           </div>
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-4">
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Growing degree-days</h2>
-            <label className="block text-xs text-[var(--color-text-secondary)]">
-              Planting date
-              <input
-                type="date"
-                value={plantingDate}
-                onChange={(e) => setPlantingDate(e.target.value)}
-                className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
-              />
-            </label>
             <label className="block text-xs text-[var(--color-text-secondary)]">
               Base temperature (°C)
               <input
@@ -415,10 +854,10 @@ export default function PrototypeDashboard() {
               </p>
             ) : null}
             <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
-              Uses archive daily min/max at centroid: daily increment is max(0, mean − base).
+              Uses each saved field&apos;s acquisition window: daily increment is max(0, mean − base).
             </p>
             {gddNote ? <p className="text-xs text-amber-400">{gddNote}</p> : null}
-            <GddChart data={gddRows} />
+            <GddChart data={gddRows} series={gddSeries} />
           </div>
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">

@@ -74,15 +74,18 @@ function bindDrawSync(
 }
 
 export default function FieldMap({
+  drawn,
   weedOverlay,
   onDrawChange,
 }: {
+  drawn: FeatureCollection | null;
   weedOverlay: FeatureCollection | null;
   onDrawChange: (collection: FeatureCollection | null) => void;
 }) {
   const mapRef = useRef<MapRef>(null);
   const drawRef = useRef<MapboxDraw | null>(null);
   const teardownRef = useRef<(() => void) | null>(null);
+  const lastEmittedCollectionRef = useRef<FeatureCollection | null>(null);
   const [drawReady, setDrawReady] = useState(false);
   const [drawMode, setDrawMode] = useState<string>("simple_select");
   const [areaDisplay, setAreaDisplay] = useState<CollectionAreaDisplay | null>(
@@ -92,6 +95,7 @@ export default function FieldMap({
   const syncDrawState = useCallback(
     (draw: MapboxDraw) => {
       const collection = readDrawFeatures(draw);
+      lastEmittedCollectionRef.current = collection;
       setAreaDisplay(formatCollectionArea(collection));
       onDrawChange(collection);
     },
@@ -100,6 +104,7 @@ export default function FieldMap({
 
   const handleDraw = useCallback(
     (collection: FeatureCollection | null) => {
+      lastEmittedCollectionRef.current = collection;
       setAreaDisplay(formatCollectionArea(collection));
       onDrawChange(collection);
     },
@@ -178,6 +183,7 @@ export default function FieldMap({
     draw.deleteAll();
     draw.changeMode("simple_select");
     exitDrawMode();
+    lastEmittedCollectionRef.current = null;
     setAreaDisplay(null);
     onDrawChange(null);
   }, [onDrawChange, exitDrawMode]);
@@ -211,6 +217,18 @@ export default function FieldMap({
       map.getCanvas().style.cursor = "";
     };
   }, [drawMode]);
+
+  useEffect(() => {
+    const draw = drawRef.current;
+    if (!drawReady || !draw || drawn === lastEmittedCollectionRef.current) return;
+
+    draw.deleteAll();
+    if (drawn?.features?.length) {
+      draw.add(drawn);
+    }
+    setAreaDisplay(formatCollectionArea(drawn));
+    lastEmittedCollectionRef.current = drawn;
+  }, [drawn, drawReady]);
 
   return (
     <div className="space-y-3">
