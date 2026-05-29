@@ -102,6 +102,12 @@ Approved users can draw field polygons, name them, assign a crop (`corn`, `cotto
 
 On an **existing** Supabase project, run [`supabase/migrations/20260522_user_fields.sql`](../supabase/migrations/20260522_user_fields.sql) in the SQL Editor. New projects that run [`supabase/schema.sql`](../supabase/schema.sql) already include the `user_fields` table and RLS policies.
 
+## 8.1. Field prediction history
+
+After **Predict** in Field lab, results (date, accuracy, infested area, overlay GeoJSON) are stored in `user_field_predictions`.
+
+On an **existing** Supabase project, run [`supabase/migrations/20260527_user_field_predictions.sql`](../supabase/migrations/20260527_user_field_predictions.sql) in the SQL Editor. Without this migration, **Predict** will fail when saving.
+
 ## 9. Email verification
 
 1. **Authentication → Providers → Email** — enable **Confirm email** if you require verification before sign-in.

@@ -13,7 +13,6 @@ import {
   type MultiSeriesPoint,
 } from "@/components/prototype/agronomy-charts";
 import { usePrototypeAuth } from "@/components/prototype/prototype-auth";
-import { demoStats, demoWeedGeoJson } from "@/lib/prototype/demo-weed";
 import { cumulativeGddSeries, formatISODateLocal } from "@/lib/prototype/gdd";
 import {
   collectionCentroid,
@@ -24,13 +23,24 @@ import {
 } from "@/lib/prototype/geo";
 import { fetchMeteoDailyRange } from "@/lib/prototype/meteo";
 import {
+  mockAcquisitionDatasets,
+  mockPredictWeedMap,
+  quoteForField,
+  type MockDataset,
+  type MockPredictionStats,
+  type MockQuote,
+} from "@/lib/prototype/mock-acquisition";
+import {
+  createUserFieldPrediction,
   createUserField,
   deleteUserField,
+  fetchUserFieldPredictionOverlay,
+  fetchUserFieldPredictions,
   fetchUserFields,
   getSupabaseClient,
   updateUserField,
 } from "@/lib/supabase/client";
-import type { CropCategory, UserField } from "@/lib/supabase/types";
+import type { CropCategory, UserField, UserFieldPrediction } from "@/lib/supabase/types";
 
 const FieldMap = dynamic(() => import("@/components/prototype/field-map"), {
   ssr: false,
@@ -41,16 +51,22 @@ const FieldMap = dynamic(() => import("@/components/prototype/field-map"), {
   ),
 });
 
-/** Mock Airbus OneAtlas–style pipeline (no live API calls). */
-const TASKING_PIPELINE_STEPS: { label: string; detail: string }[] = [
-  { label: "Validate AOI", detail: "All vertices inside California sandbox (local checks)" },
-  { label: "OneAtlas feasibility", detail: "Neo contract · collection window (mock — always feasible)" },
-  { label: "Price quote", detail: "Per km² / attempt estimate (mock)" },
-  { label: "Submit order", detail: "POST /orders → orderId (mock)" },
-  { label: "Satellite acquisition", detail: "Tasking / archive retrieval · cloud mask (mock)" },
-  { label: "Product delivered", detail: "DIMAP / GeoTIFF in workspace (mock)" },
-  { label: "Ortho & 5 m tiling", detail: "GDAL resample + grid (mock — no real raster I/O)" },
-  { label: "Weed surface (example)", detail: "Epic 0.4 inference not wired — synthetic GeoJSON for UX only" },
+type WorkflowStage =
+  | "field_ready"
+  | "quote_ready"
+  | "cost_approved"
+  | "datasets_ready"
+  | "dataset_selected"
+  | "prediction_running"
+  | "prediction_ready";
+
+type WorkflowAction = "quote" | "approve" | "data" | "predict";
+
+const GET_DATA_STEPS: { label: string; detail: string }[] = [
+  { label: "Validate AOI", detail: "All vertices inside California sandbox (local checks)." },
+  { label: "Check feasibility", detail: "Acquisition window + source availability (mock)." },
+  { label: "Request products", detail: "Visual RGB datasets requested (mock)." },
+  { label: "Assemble catalog", detail: "Datasets prepared for user selection (mock)." },
 ];
 
 const STEP_MS = 520;
@@ -111,6 +127,52 @@ function seriesKey(field: UserField): string {
   return `field_${field.id.replaceAll("-", "_")}`;
 }
 
+function workflowButtonClass(action: WorkflowAction, activeAction: WorkflowAction | null): string {
+  const active = action === activeAction;
+  return [
+    "rounded-xl border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+    active
+      ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-[#052e16] shadow-sm"
+      : "border-[var(--color-border)] text-[var(--color-text-primary)] hover:border-[var(--color-accent-dim)]",
+  ].join(" ");
+}
+
+function formatPredictionDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatUsd(value: number): string {
+  if (value > 0 && value < 0.01) {
+    return `$${value.toFixed(6)}`;
+  }
+  return `$${value.toFixed(2)}`;
+}
+
+function openDatePicker(input: HTMLInputElement | null): void {
+  if (!input) return;
+  input.focus();
+  try {
+    (input as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+  } catch {
+    // Some browsers only allow showPicker from direct user gestures.
+  }
+}
+
+function statsFromPrediction(prediction: UserFieldPrediction): MockPredictionStats {
+  return {
+    infestedAcres: prediction.infested_acres ?? 0,
+    infestedPct: prediction.infested_pct ?? 0,
+    meanConfidence: prediction.mean_confidence ?? 0,
+    accuracyScore: prediction.accuracy_score ?? 0,
+    pixelSizeMeters: prediction.pixel_size_meters ?? 0,
+  };
+}
+
 function mergeSeriesByDate(
   series: { key: string; points: { date: string; value: number | null }[] }[],
 ): MultiSeriesPoint[] {
@@ -134,13 +196,22 @@ export default function PrototypeDashboard() {
   const userId = supabaseSession?.user?.id ?? null;
   const [drawn, setDrawn] = useState<FeatureCollection | null>(null);
   const [weedOverlay, setWeedOverlay] = useState<FeatureCollection | null>(null);
+  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>("field_ready");
+  const [activeWorkflowAction, setActiveWorkflowAction] = useState<WorkflowAction | null>(null);
   const [jobRunning, setJobRunning] = useState(false);
   const [jobStep, setJobStep] = useState(0);
   const [jobError, setJobError] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
-  const [stats, setStats] = useState<{ patches: number; coveragePct: number; meanDensity: number } | null>(
-    null,
-  );
+  const [quote, setQuote] = useState<MockQuote | null>(null);
+  const [datasets, setDatasets] = useState<MockDataset[]>([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
+  const [predictionStats, setPredictionStats] = useState<MockPredictionStats | null>(null);
+  const [predictionSaving, setPredictionSaving] = useState(false);
+  const [savedPredictions, setSavedPredictions] = useState<UserFieldPrediction[]>([]);
+  const [predictionsLoading, setPredictionsLoading] = useState(false);
+  const [predictionOverlayLoading, setPredictionOverlayLoading] = useState(false);
+  const [selectedPredictionId, setSelectedPredictionId] = useState<string | null>(null);
+  const [overlayVisible, setOverlayVisible] = useState(false);
 
   const [forecastRows, setForecastRows] = useState<
     MultiSeriesPoint[]
@@ -170,6 +241,8 @@ export default function PrototypeDashboard() {
   const ndviDemo = useMemo(() => buildNdviDemoSeries(90), []);
 
   const timersRef = useRef<number[]>([]);
+  const acquisitionStartInputRef = useRef<HTMLInputElement>(null);
+  const acquisitionEndInputRef = useRef<HTMLInputElement>(null);
 
   const fieldPolygons = useMemo(() => listDrawnPolygons(drawn), [drawn]);
 
@@ -189,6 +262,26 @@ export default function PrototypeDashboard() {
     () => savedFields.find((field) => field.id === selectedFieldId) ?? null,
     [savedFields, selectedFieldId],
   );
+  const selectedDataset = useMemo(
+    () => datasets.find((dataset) => dataset.id === selectedDatasetId) ?? null,
+    [datasets, selectedDatasetId],
+  );
+  const selectedPrediction = useMemo(
+    () =>
+      savedPredictions.find((prediction) => prediction.id === selectedPredictionId) ??
+      null,
+    [savedPredictions, selectedPredictionId],
+  );
+  const selectedPredictionOverlay = useMemo(
+    () =>
+      selectedPrediction && isFeatureCollection(selectedPrediction.overlay)
+        ? selectedPrediction.overlay
+        : null,
+    [selectedPrediction],
+  );
+  const visibleWeedOverlay = overlayVisible
+    ? selectedPredictionOverlay ?? weedOverlay
+    : null;
   const canPersistFields = mode === "supabase" && Boolean(userId);
   const acquisitionWindowLabel = useMemo(() => {
     if (acquisitionStartDate && acquisitionEndDate) {
@@ -202,6 +295,24 @@ export default function PrototypeDashboard() {
   const effectiveBaseTempC = Number.isFinite(baseTempC)
     ? Math.min(GDD_BASE_MAX, Math.max(GDD_BASE_MIN, baseTempC))
     : 10;
+  const activeFieldId = selectedFieldId ?? "draft-field";
+
+  const resetWorkflow = useCallback(() => {
+    setWorkflowStage("field_ready");
+    setActiveWorkflowAction(null);
+    setJobRunning(false);
+    setJobStep(0);
+    setJobError(null);
+    setOrderId(null);
+    setQuote(null);
+    setDatasets([]);
+    setSelectedDatasetId(null);
+    setPredictionStats(null);
+    setPredictionSaving(false);
+    setSelectedPredictionId(null);
+    setOverlayVisible(false);
+    setWeedOverlay(null);
+  }, []);
 
   const refreshSavedFields = useCallback(async () => {
     if (!userId) {
@@ -223,18 +334,98 @@ export default function PrototypeDashboard() {
     setSavedFields(fields);
   }, [userId]);
 
+  const refreshFieldPredictions = useCallback(async () => {
+    if (!userId || !selectedFieldId) {
+      setSavedPredictions([]);
+      setSelectedPredictionId(null);
+      setOverlayVisible(false);
+      return;
+    }
+
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    setPredictionsLoading(true);
+    const { predictions, error } = await fetchUserFieldPredictions(
+      client,
+      userId,
+      selectedFieldId,
+    );
+    setPredictionsLoading(false);
+    if (error) {
+      setFieldError(error);
+      return;
+    }
+    setSavedPredictions(predictions);
+    setSelectedPredictionId((current) =>
+      current && predictions.some((prediction) => prediction.id === current)
+        ? current
+        : predictions[0]?.id ?? null,
+    );
+  }, [userId, selectedFieldId]);
+
   useEffect(() => {
     void refreshSavedFields();
   }, [refreshSavedFields]);
 
+  useEffect(() => {
+    void refreshFieldPredictions();
+  }, [refreshFieldPredictions]);
+
+  useEffect(() => {
+    if (!selectedPrediction) return;
+    setPredictionStats(statsFromPrediction(selectedPrediction));
+  }, [selectedPrediction]);
+
+  useEffect(() => {
+    if (
+      !overlayVisible ||
+      !selectedPrediction ||
+      selectedPredictionOverlay ||
+      !userId
+    ) {
+      return;
+    }
+
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    let cancelled = false;
+    setPredictionOverlayLoading(true);
+    void (async () => {
+      const { overlay, error } = await fetchUserFieldPredictionOverlay(
+        client,
+        userId,
+        selectedPrediction.id,
+      );
+      if (cancelled) return;
+      setPredictionOverlayLoading(false);
+      if (error) {
+        setJobError(error);
+        return;
+      }
+      if (!isFeatureCollection(overlay)) {
+        setJobError("Saved prediction overlay is invalid.");
+        return;
+      }
+      setSavedPredictions((current) =>
+        current.map((prediction) =>
+          prediction.id === selectedPrediction.id
+            ? { ...prediction, overlay }
+            : prediction,
+        ),
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [overlayVisible, selectedPrediction, selectedPredictionOverlay, userId]);
+
   const handleDrawChange = useCallback((collection: FeatureCollection | null) => {
     setDrawn(collection);
-    setWeedOverlay(null);
-    setStats(null);
-    setJobStep(0);
-    setOrderId(null);
-    setJobError(null);
-  }, []);
+    resetWorkflow();
+  }, [resetWorkflow]);
 
   const startNewField = useCallback(() => {
     const window = defaultAcquisitionWindow();
@@ -244,13 +435,11 @@ export default function PrototypeDashboard() {
     setAcquisitionStartDate(window.start);
     setAcquisitionEndDate(window.end);
     setDrawn(null);
-    setWeedOverlay(null);
-    setStats(null);
-    setJobStep(0);
-    setOrderId(null);
+    setSavedPredictions([]);
+    resetWorkflow();
     setFieldMessage(null);
     setFieldError(null);
-  }, []);
+  }, [resetWorkflow]);
 
   const loadSavedField = useCallback((field: UserField) => {
     if (!isFeatureCollection(field.geometry)) {
@@ -264,13 +453,10 @@ export default function PrototypeDashboard() {
     setAcquisitionStartDate(field.acquisition_start_date ?? "");
     setAcquisitionEndDate(field.acquisition_end_date ?? "");
     setDrawn(field.geometry);
-    setWeedOverlay(null);
-    setStats(null);
-    setJobStep(0);
-    setOrderId(null);
+    resetWorkflow();
     setFieldMessage(`Loaded ${field.name}.`);
     setFieldError(null);
-  }, []);
+  }, [resetWorkflow]);
 
   const saveCurrentField = useCallback(async () => {
     setFieldMessage(null);
@@ -482,8 +668,9 @@ export default function PrototypeDashboard() {
     };
   }, []);
 
-  const runJob = useCallback(() => {
-    if (!fieldPolygons.length || !fieldPolygon || !centroid || jobRunning) return;
+  const prepareQuote = useCallback(() => {
+    setActiveWorkflowAction("quote");
+    if (!fieldPolygons.length || !fieldArea) return;
     if (!polygonsInCalifornia(fieldPolygons)) {
       setJobError(
         "Prototype sandbox: every polygon vertex must lie inside California. Pan/zoom and redraw.",
@@ -491,11 +678,38 @@ export default function PrototypeDashboard() {
       return;
     }
     setJobError(null);
+    setQuote(quoteForField(fieldArea.acres));
+    setWorkflowStage("quote_ready");
+  }, [fieldPolygons, fieldArea]);
+
+  const approveCost = useCallback(() => {
+    setActiveWorkflowAction("approve");
+    if (!quote) return;
+    setWorkflowStage("cost_approved");
+    setOrderId(mockOrderId());
+  }, [quote]);
+
+  const getMockData = useCallback(() => {
+    setActiveWorkflowAction("data");
+    if (!drawn || !fieldPolygons.length || !quote || jobRunning) return;
+    if (!acquisitionStartDate || !acquisitionEndDate) {
+      setJobError("Set acquisition start and end dates before getting data.");
+      return;
+    }
+    if (acquisitionEndDate < acquisitionStartDate) {
+      setJobError("Acquisition end date must be on or after the start date.");
+      return;
+    }
+
+    setJobError(null);
     setJobRunning(true);
     setJobStep(0);
-    setOrderId(mockOrderId());
+    setDatasets([]);
+    setSelectedDatasetId(null);
+    setPredictionStats(null);
+    setSelectedPredictionId(null);
+    setOverlayVisible(false);
     setWeedOverlay(null);
-    setStats(null);
     timersRef.current.forEach((id) => window.clearTimeout(id));
     timersRef.current = [];
 
@@ -504,21 +718,102 @@ export default function PrototypeDashboard() {
       timersRef.current.push(id);
     };
 
-    TASKING_PIPELINE_STEPS.forEach((_, idx) => {
+    GET_DATA_STEPS.forEach((_, idx) => {
       schedule(STEP_MS * (idx + 1), () => setJobStep(idx + 1));
     });
 
-    schedule(STEP_MS * (TASKING_PIPELINE_STEPS.length + 1), () => {
-      const fc = demoWeedGeoJson(
-        fieldPolygon,
-        JSON.stringify(fieldPolygons.map((p) => p.coordinates[0])),
-      );
-      setWeedOverlay(fc);
-      setStats(demoStats(fc));
+    schedule(STEP_MS * (GET_DATA_STEPS.length + 1), () => {
+      const options = mockAcquisitionDatasets({
+        fieldId: activeFieldId,
+        startDate: acquisitionStartDate,
+        endDate: acquisitionEndDate,
+      });
+      setDatasets(options);
       setJobRunning(false);
-      setJobStep(TASKING_PIPELINE_STEPS.length);
+      setWorkflowStage("datasets_ready");
     });
-  }, [fieldPolygon, fieldPolygons, centroid, jobRunning]);
+  }, [
+    drawn,
+    fieldPolygons,
+    quote,
+    jobRunning,
+    acquisitionStartDate,
+    acquisitionEndDate,
+    activeFieldId,
+  ]);
+
+  const selectDataset = useCallback((datasetId: string) => {
+    setSelectedDatasetId(datasetId);
+    setOverlayVisible(false);
+    setWorkflowStage("dataset_selected");
+  }, []);
+
+  const runPrediction = useCallback(() => {
+    setActiveWorkflowAction("predict");
+    if (!drawn || !selectedDatasetId || !selectedDataset) return;
+    if (!canPersistFields || !userId || !selectedFieldId) {
+      setJobError("Save or load this field before predicting so the result can be stored.");
+      return;
+    }
+    const client = getSupabaseClient();
+    if (!client) {
+      setJobError("Supabase is not configured.");
+      return;
+    }
+    setWorkflowStage("prediction_running");
+    setJobError(null);
+    setPredictionSaving(true);
+    window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = mockPredictWeedMap({
+            fieldGeoJson: drawn,
+            datasetId: selectedDatasetId,
+          });
+          const predictedAt = new Date().toISOString();
+          const saved = await createUserFieldPrediction(client, userId, {
+            field_id: selectedFieldId,
+            dataset_id: selectedDataset.id,
+            dataset_label: selectedDataset.label,
+            acquisition_date: selectedDataset.acquisitionDate,
+            predicted_at: predictedAt,
+            accuracy_score: result.stats.accuracyScore,
+            infested_acres: result.stats.infestedAcres,
+            infested_pct: result.stats.infestedPct,
+            mean_confidence: result.stats.meanConfidence,
+            pixel_size_meters: result.stats.pixelSizeMeters,
+            overlay: result.overlay,
+          });
+          if (saved.error || !saved.prediction) {
+            setJobError(saved.error ?? "Prediction completed, but could not be saved.");
+            setWorkflowStage("dataset_selected");
+            return;
+          }
+          setWeedOverlay(result.overlay);
+          setPredictionStats(result.stats);
+          setSavedPredictions((current) => [saved.prediction!, ...current]);
+          setSelectedPredictionId(saved.prediction.id);
+          setOverlayVisible(true);
+          setFieldMessage(`Prediction saved to ${fieldName || selectedField?.name || "field"}.`);
+          setWorkflowStage("prediction_ready");
+        } catch (e) {
+          setJobError(e instanceof Error ? e.message : "Prediction failed.");
+          setWorkflowStage("dataset_selected");
+        } finally {
+          setPredictionSaving(false);
+        }
+      })();
+    }, 700);
+  }, [
+    drawn,
+    selectedDatasetId,
+    selectedDataset,
+    canPersistFields,
+    userId,
+    selectedFieldId,
+    fieldName,
+    selectedField,
+  ]);
 
   return (
     <div className="space-y-8">
@@ -531,8 +826,8 @@ export default function PrototypeDashboard() {
         </h1>
         <p className="mt-3 text-sm text-[var(--color-text-secondary)] max-w-3xl leading-relaxed">
           Draw a field polygon in <strong className="text-[var(--color-text-primary)]">California</strong>, then{" "}
-          <strong className="text-[var(--color-text-primary)]">Run acquisition (mock)</strong> to simulate the
-          Airbus OneAtlas ordering chain. There is <strong className="text-[var(--color-text-primary)]">no live tasking</strong>,{" "}
+          follow the quote, approval, data and prediction steps to simulate the
+          imagery ordering chain. There is <strong className="text-[var(--color-text-primary)]">no live tasking</strong>,{" "}
           <strong className="text-[var(--color-text-primary)]">no billing</strong>, and{" "}
           <strong className="text-[var(--color-text-primary)]">no ML inference</strong> — the weed layer is{" "}
           <strong className="text-[var(--color-text-primary)]">example GeoJSON</strong> only. Open-Meteo forecast / GDD / demo NDVI
@@ -542,28 +837,60 @@ export default function PrototypeDashboard() {
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          <FieldMap drawn={drawn} weedOverlay={weedOverlay} onDrawChange={handleDrawChange} />
+          <FieldMap drawn={drawn} weedOverlay={visibleWeedOverlay} onDrawChange={handleDrawChange} />
           <p className="text-xs text-[var(--color-text-secondary)]">
             Satellite imagery (Esri). Click <strong className="text-[var(--color-text-primary)]">Draw polygon</strong>{" "}
             above the map, then click corners on the map and click the first point again to close. Use{" "}
             <strong className="text-[var(--color-text-primary)]">Clear</strong> to remove the shape.
           </p>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={runJob}
-              disabled={!fieldPolygons.length || jobRunning}
-              className="rounded-xl bg-[var(--color-accent)] px-5 py-3 text-sm font-semibold text-[#052e16] disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
-            >
-              {jobRunning ? "Running mock pipeline…" : "Run acquisition (mock)"}
-            </button>
-            {jobError ? (
-              <span className="text-xs text-red-400 max-w-md">{jobError}</span>
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 sm:p-5 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={prepareQuote}
+                disabled={!fieldPolygons.length}
+                className={workflowButtonClass("quote", activeWorkflowAction)}
+              >
+                Get quote
+              </button>
+              <button
+                type="button"
+                onClick={approveCost}
+                disabled={!quote || workflowStage === "field_ready"}
+                className={workflowButtonClass("approve", activeWorkflowAction)}
+              >
+                Approve cost
+              </button>
+              <button
+                type="button"
+                onClick={getMockData}
+                disabled={workflowStage !== "cost_approved" && workflowStage !== "datasets_ready" && workflowStage !== "dataset_selected"}
+                className={workflowButtonClass("data", activeWorkflowAction)}
+              >
+                {jobRunning ? "Getting data…" : "Get data"}
+              </button>
+              <button
+                type="button"
+                onClick={runPrediction}
+                disabled={!selectedDatasetId || workflowStage === "prediction_running" || predictionSaving}
+                className={workflowButtonClass("predict", activeWorkflowAction)}
+              >
+                {workflowStage === "prediction_running" || predictionSaving ? "Predicting…" : "Predict"}
+              </button>
+              <span className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">
+                Stage: {workflowStage.replaceAll("_", " ")}
+              </span>
+            </div>
+            {quote ? (
+              <p className="text-sm text-[var(--color-text-primary)]">
+                Quote: {formatUsd(quote.estimatedUsd)} total (${quote.unitUsdPerAcre.toFixed(2)}/acre · {quote.areaAcres.toLocaleString(undefined, { maximumFractionDigits: 4 })} acres)
+              </p>
             ) : null}
+            {jobError ? <p className="text-xs text-red-400 max-w-md">{jobError}</p> : null}
           </div>
 
-          {jobRunning || jobStep > 0 ? (
+          {jobRunning || datasets.length > 0 || workflowStage === "cost_approved" ? (
             <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-background)] p-4 sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-border)] pb-3 mb-3">
                 <div>
@@ -578,11 +905,11 @@ export default function PrototypeDashboard() {
                   </p>
                 </div>
                 <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-secondary)]">
-                  {jobRunning ? "In progress" : jobStep >= TASKING_PIPELINE_STEPS.length ? "Complete" : ""}
+                  {jobRunning ? "In progress" : datasets.length ? "Complete" : "Pending"}
                 </span>
               </div>
               <ol className="space-y-3">
-                {TASKING_PIPELINE_STEPS.map((step, i) => (
+                {GET_DATA_STEPS.map((step, i) => (
                   <li key={step.label} className="flex gap-3 text-sm">
                     <span
                       className={
@@ -591,7 +918,7 @@ export default function PrototypeDashboard() {
                           : "text-[var(--color-text-secondary)] shrink-0"
                       }
                     >
-                      {jobStep > i ? "✓" : jobStep === i && jobRunning ? "…" : "○"}
+                      {jobStep > i ? "✓" : jobStep === i && jobRunning ? "…" : datasets.length && i === GET_DATA_STEPS.length - 1 ? "✓" : "○"}
                     </span>
                     <div>
                       <p className={jobStep > i ? "text-[var(--color-text-primary)] font-medium" : "text-[var(--color-text-secondary)]"}>
@@ -605,23 +932,114 @@ export default function PrototypeDashboard() {
             </div>
           ) : null}
 
-          {stats ? (
-            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 grid sm:grid-cols-3 gap-4">
+          {datasets.length ? (
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Available visual datasets</h3>
+              <div className="grid sm:grid-cols-3 gap-3">
+                {datasets.map((dataset) => (
+                  <button
+                    key={dataset.id}
+                    type="button"
+                    onClick={() => selectDataset(dataset.id)}
+                    className={`text-left rounded-xl border p-3 space-y-2 ${
+                      dataset.id === selectedDatasetId
+                        ? "border-[var(--color-accent-dim)] bg-[var(--color-accent)]/5"
+                        : "border-[var(--color-border)] bg-[var(--color-background)]"
+                    }`}
+                  >
+                    <div className="h-8 rounded-md" style={{ backgroundColor: dataset.previewColor }} />
+                    <p className="text-sm font-medium text-[var(--color-text-primary)]">{dataset.label}</p>
+                    <p className="text-[11px] text-[var(--color-text-secondary)]">
+                      {dataset.acquisitionDate} · cloud {dataset.cloudPct}% · quality {dataset.qualityScore}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {predictionStats ? (
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 grid sm:grid-cols-5 gap-4">
               <div>
-                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Demo patches</p>
-                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{stats.patches}</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Infested acres</p>
+                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{predictionStats.infestedAcres}</p>
               </div>
               <div>
-                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Est. coverage</p>
-                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{stats.coveragePct}%</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Infested coverage</p>
+                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{predictionStats.infestedPct}%</p>
               </div>
               <div>
-                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Mean density</p>
-                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{stats.meanDensity}</p>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Mean confidence</p>
+                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{predictionStats.meanConfidence}</p>
               </div>
-              <p className="sm:col-span-3 text-xs text-[var(--color-text-secondary)]">
-                Illustrative stats after the demo weed step — real metrics require delivered imagery + Epic 0.4.
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Accuracy</p>
+                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{predictionStats.accuracyScore}%</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-secondary)]">Pixel size</p>
+                <p className="text-2xl font-semibold text-[var(--color-text-primary)]">{predictionStats.pixelSizeMeters}m</p>
+              </div>
+              <p className="sm:col-span-5 text-xs text-[var(--color-text-secondary)]">
+                Synthetic pixel-level weed surface generated from selected mock visual dataset and saved to the loaded field.
               </p>
+            </div>
+          ) : null}
+
+          {selectedFieldId ? (
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Saved predictions</h3>
+                  <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                    Select a prediction to inspect, then toggle the weed pixels on or off while panning the map.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!selectedPrediction}
+                  onClick={() => setOverlayVisible((visible) => !visible)}
+                  className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-primary)] disabled:opacity-40"
+                >
+                  {predictionOverlayLoading
+                    ? "Loading overlay…"
+                    : overlayVisible
+                      ? "Hide overlay"
+                      : "Show overlay"}
+                </button>
+              </div>
+              {predictionsLoading ? (
+                <p className="text-xs text-[var(--color-text-secondary)]">Loading predictions…</p>
+              ) : savedPredictions.length ? (
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {savedPredictions.map((prediction) => (
+                    <button
+                      key={prediction.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPredictionId(prediction.id);
+                        setOverlayVisible(true);
+                      }}
+                      className={`rounded-xl border p-3 text-left ${
+                        prediction.id === selectedPredictionId
+                          ? "border-[var(--color-accent-dim)] bg-[var(--color-accent)]/5"
+                          : "border-[var(--color-border)] bg-[var(--color-background)]"
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-[var(--color-text-primary)]">
+                        {prediction.dataset_label}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[var(--color-text-secondary)]">
+                        {formatPredictionDate(prediction.predicted_at)} · accuracy {prediction.accuracy_score ?? "n/a"}%
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  No saved predictions for this field yet.
+                </p>
+              )}
             </div>
           ) : null}
         </div>
@@ -680,20 +1098,26 @@ export default function PrototypeDashboard() {
                 <label className="block text-xs text-[var(--color-text-secondary)]">
                   Acquisition start
                   <input
+                    ref={acquisitionStartInputRef}
                     type="date"
                     value={acquisitionStartDate}
+                    onClick={() => openDatePicker(acquisitionStartInputRef.current)}
+                    onFocus={() => openDatePicker(acquisitionStartInputRef.current)}
                     onChange={(e) => setAcquisitionStartDate(e.target.value)}
-                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)] [color-scheme:dark]"
                   />
                 </label>
                 <label className="block text-xs text-[var(--color-text-secondary)]">
                   Acquisition end
                   <input
+                    ref={acquisitionEndInputRef}
                     type="date"
                     value={acquisitionEndDate}
                     min={acquisitionStartDate || undefined}
+                    onClick={() => openDatePicker(acquisitionEndInputRef.current)}
+                    onFocus={() => openDatePicker(acquisitionEndInputRef.current)}
                     onChange={(e) => setAcquisitionEndDate(e.target.value)}
-                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                    className="mt-2 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-text-primary)] [color-scheme:dark]"
                   />
                 </label>
               </div>

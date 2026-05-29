@@ -296,16 +296,35 @@ export default function FieldMap({
                 id="weed-demo-fill"
                 type="fill"
                 paint={{
-                  "fill-color": "#86efac",
-                  "fill-opacity": 0.38,
+                  "fill-color": [
+                    "case",
+                    ["==", ["get", "weed"], true],
+                    "#ef4444",
+                    "#22c55e",
+                  ] as unknown as string,
+                  "fill-opacity": [
+                    "interpolate",
+                    ["linear"],
+                    ["coalesce", ["get", "confidence"], 0.2],
+                    0,
+                    0.12,
+                    1,
+                    0.5,
+                  ] as unknown as number,
                 }}
               />
               <Layer
                 id="weed-demo-line"
                 type="line"
                 paint={{
-                  "line-color": "#4ade80",
-                  "line-width": 2,
+                  "line-color": [
+                    "case",
+                    ["==", ["get", "weed"], true],
+                    "#f87171",
+                    "#4ade80",
+                  ] as unknown as string,
+                  "line-width": 0.2,
+                  "line-opacity": 0.45,
                 }}
               />
             </Source>

@@ -39,6 +39,26 @@ create table if not exists public.user_fields (
 create index if not exists user_fields_user_id_idx on public.user_fields (user_id);
 create index if not exists user_fields_crop_idx on public.user_fields (crop);
 
+create table if not exists public.user_field_predictions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  field_id uuid not null references public.user_fields (id) on delete cascade,
+  dataset_id text not null,
+  dataset_label text not null,
+  acquisition_date date,
+  predicted_at timestamptz not null default now(),
+  accuracy_score double precision,
+  infested_acres double precision,
+  infested_pct double precision,
+  mean_confidence double precision,
+  pixel_size_meters double precision,
+  overlay jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists user_field_predictions_user_field_idx
+on public.user_field_predictions (user_id, field_id, predicted_at desc);
+
 create or replace function public.handle_new_user ()
 returns trigger
 language plpgsql
@@ -95,6 +115,7 @@ execute function public.set_user_fields_updated_at ();
 
 alter table public.profiles enable row level security;
 alter table public.user_fields enable row level security;
+alter table public.user_field_predictions enable row level security;
 
 -- SECURITY DEFINER avoids RLS recursion when admin policies read profiles.
 create or replace function public.is_admin ()
@@ -170,6 +191,35 @@ with check (auth.uid () = user_id);
 drop policy if exists "user_fields_delete_own" on public.user_fields;
 create policy "user_fields_delete_own"
 on public.user_fields
+for delete
+to authenticated
+using (auth.uid () = user_id);
+
+drop policy if exists "user_field_predictions_select_own" on public.user_field_predictions;
+create policy "user_field_predictions_select_own"
+on public.user_field_predictions
+for select
+to authenticated
+using (auth.uid () = user_id);
+
+drop policy if exists "user_field_predictions_insert_own" on public.user_field_predictions;
+create policy "user_field_predictions_insert_own"
+on public.user_field_predictions
+for insert
+to authenticated
+with check (
+  auth.uid () = user_id
+  and exists (
+    select 1
+    from public.user_fields
+    where user_fields.id = field_id
+      and user_fields.user_id = auth.uid ()
+  )
+);
+
+drop policy if exists "user_field_predictions_delete_own" on public.user_field_predictions;
+create policy "user_field_predictions_delete_own"
+on public.user_field_predictions
 for delete
 to authenticated
 using (auth.uid () = user_id);

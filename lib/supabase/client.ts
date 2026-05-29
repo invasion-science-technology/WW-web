@@ -5,6 +5,8 @@ import type {
   ProfileStatus,
   UserField,
   UserFieldInput,
+  UserFieldPrediction,
+  UserFieldPredictionInput,
   ProfileUpdate,
 } from "@/lib/supabase/types";
 
@@ -12,6 +14,8 @@ export type { Profile, ProfileStatus };
 
 const USER_FIELD_COLUMNS =
   "id, user_id, name, crop, geometry, acquisition_start_date, acquisition_end_date, area_m2, area_acres, created_at, updated_at";
+const USER_FIELD_PREDICTION_COLUMNS =
+  "id, user_id, field_id, dataset_id, dataset_label, acquisition_date, predicted_at, accuracy_score, infested_acres, infested_pct, mean_confidence, pixel_size_meters, created_at";
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(
@@ -113,6 +117,22 @@ function cleanFieldInput(input: UserFieldInput) {
   };
 }
 
+function cleanPredictionInput(input: UserFieldPredictionInput) {
+  return {
+    field_id: input.field_id,
+    dataset_id: input.dataset_id,
+    dataset_label: input.dataset_label,
+    acquisition_date: input.acquisition_date ?? null,
+    predicted_at: input.predicted_at,
+    accuracy_score: input.accuracy_score ?? null,
+    infested_acres: input.infested_acres ?? null,
+    infested_pct: input.infested_pct ?? null,
+    mean_confidence: input.mean_confidence ?? null,
+    pixel_size_meters: input.pixel_size_meters ?? null,
+    overlay: input.overlay,
+  };
+}
+
 export async function fetchUserFields(
   client: SupabaseClient,
   userId: string,
@@ -194,4 +214,78 @@ export async function deleteUserField(
   }
 
   return { ok: true };
+}
+
+export async function fetchUserFieldPredictions(
+  client: SupabaseClient,
+  userId: string,
+  fieldId: string,
+): Promise<{ predictions: UserFieldPrediction[]; error?: string }> {
+  const { data, error } = await client
+    .from("user_field_predictions")
+    .select(USER_FIELD_PREDICTION_COLUMNS)
+    .eq("user_id", userId)
+    .eq("field_id", fieldId)
+    .order("predicted_at", { ascending: false });
+
+  if (error) {
+    console.error("[user field predictions]", error.message);
+    return { predictions: [], error: error.message };
+  }
+
+  return {
+    predictions: (data ?? []).map((prediction) => ({
+      ...prediction,
+      overlay: null,
+    })) as UserFieldPrediction[],
+  };
+}
+
+export async function fetchUserFieldPredictionOverlay(
+  client: SupabaseClient,
+  userId: string,
+  predictionId: string,
+): Promise<{ overlay: unknown | null; error?: string }> {
+  const { data, error } = await client
+    .from("user_field_predictions")
+    .select("overlay")
+    .eq("user_id", userId)
+    .eq("id", predictionId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[user field prediction overlay]", error.message);
+    return { overlay: null, error: error.message };
+  }
+
+  return { overlay: data?.overlay ?? null };
+}
+
+export async function createUserFieldPrediction(
+  client: SupabaseClient,
+  userId: string,
+  input: UserFieldPredictionInput,
+): Promise<{ prediction: UserFieldPrediction | null; error?: string }> {
+  const payload = {
+    user_id: userId,
+    ...cleanPredictionInput(input),
+  };
+
+  const { data, error } = await client
+    .from("user_field_predictions")
+    .insert(payload)
+    .select(USER_FIELD_PREDICTION_COLUMNS)
+    .single();
+
+  if (error) {
+    console.error("[user field predictions create]", error.message);
+    return { prediction: null, error: error.message };
+  }
+
+  return {
+    prediction: {
+      ...(data as Omit<UserFieldPrediction, "overlay">),
+      overlay: input.overlay,
+    },
+  };
 }
